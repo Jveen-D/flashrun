@@ -21,6 +21,23 @@
   <br/>
 </div>
 
+## 📦 安装指南与下载 (免编译)
+
+如果您不想折腾代码，只需点击上方按钮，或者前往本仓库的 [**Releases 最新发行版页面**](https://github.com/Jveen-D/flashrun/releases/latest) 下载构建好的原生安装包。
+得益于 GitHub Actions 全自动云端编译，我们免费为您硬核提供：
+- 🍎 **macOS**: 支持 Intel 和 Apple Silicon M 系列芯片 (`.dmg` 镜像文件)
+- 🏁 **Windows**: 支持标准系统级安装与绿色便携版 (`.msi` 微软标准安装包 / `.exe`)
+
+> ⚠️ **macOS 用户安装须知 (必看)**：
+> 由于本应用为免费且硬核的开源构建版，我们尚未缴纳 Apple 开发者高昂的年费并进行数字证书签名（Notarization）。当您首次在 Mac 上点开下载好的 `.app` 时，苹果的 Gatekeeper（门禁拦截系统）可能会故意误报恐吓：**`"FlashRun.app"已损坏，无法打开。您应该将它移到废纸篓。`**
+> 
+> **终极解决方法**：打开您的 Mac 自带的 `终端 (Terminal)`，直接敲入下面这行“放行命令”强行解除系统误判的隔离标签即可（假设您已将 App 拖入了「应用程序」文件夹）：
+> ```bash
+> sudo xattr -rd com.apple.quarantine /Applications/FlashRun.app
+> ```
+
+---
+
 ## 📖 什么是 FlashRun？
 
 如果你每天需要同时维护 3~5 个前端项目，受够了频繁地 `cd` 切目录、每次开机就要重敲 `pnpm dev` 并且终端窗口堆积如山……那么 **FlashRun** 就是你的终极解药。
@@ -39,22 +56,6 @@
 ## 📸 界面预览
 ![主界面全貌](./docs/screenshot.png)
 
-## 📦 安装与下载 (免编译)
-
-最简单的方式，点击顶部的 Download Badge 或者前往本仓库的 [**Releases 最新发行版页面**](https://github.com/Jveen-D/flashrun/releases/latest) 直接下载安装包。
-得益于 GitHub Actions 云端构建，我们同时免费为您提供了：
-- 🍎 **macOS**: 支持 Intel 和 Apple Silicon M系列处理器 (`.dmg`)
-- 🏁 **Windows**: 支持标准安装与便携版 (`.msi` / `.exe`)
-
-> ⚠️ **macOS 安装须知 (必看)**：
-> 由于本应用为未购买 Apple 开发者证书的开源构建版，当您首次在 Mac 上打开下载的 `.app` 时，系统可能会因安全拦截而误报：**`"FlashRun.app"已损坏，无法打开。您应该将它移到废纸篓。`**
-> 
-> **解决方法**：打开您的 Mac `终端 (Terminal)`，运行以下放行命令去隔离即可正常打开（假设您已将其拖入「应用程序」文件夹）：
-> ```bash
-> sudo xattr -rd com.apple.quarantine /Applications/FlashRun.app
-> ```
-
----
 
 ## 🛠️ 想要参与开发？
 
