@@ -9,6 +9,8 @@ jobs:
   release:
     permissions:
       contents: write
+      discussions: write
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
