@@ -1,0 +1,128 @@
+import React, { useEffect, useRef } from 'react';
+import { Terminal } from 'xterm';
+import { FitAddon } from 'xterm-addon-fit';
+import { listen } from '@tauri-apps/api/event';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { Trash2, Copy } from 'lucide-react';
+import 'xterm/css/xterm.css';
+import { WebLinksAddon } from 'xterm-addon-web-links';
+
+interface TerminalWindowProps {
+  className?: string;
+}
+
+const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+
+  useEffect(() => {
+    if (!terminalRef.current) return;
+
+    // 1. 初始化 Xterm 实例 (背景设为透明)
+    const term = new Terminal({
+      theme: {
+        background: 'transparent',
+        foreground: '#d4d4d4',
+        cursor: '#ffffff',
+      },
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontSize: 13,
+      convertEol: true,
+      allowTransparency: true,
+    });
+    
+    // 2. 添加相关 Addons
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+
+    const webLinksAddon = new WebLinksAddon((e: MouseEvent, uri: string) => {
+      console.log("Terminal link clicked:", uri, "modifiers:", e.ctrlKey, e.metaKey);
+      // 只有在按下 Ctrl (Win) 或 Cmd (Mac) 时才打开链接
+      if (e.ctrlKey || e.metaKey) {
+        openUrl(uri).catch((err: any) => console.error("打开链接失败:", err));
+      }
+    });
+    term.loadAddon(webLinksAddon);
+    
+    // 3. 挂载到 DOM
+    term.open(terminalRef.current);
+    fitAddon.fit();
+
+    termRef.current = term;
+    fitAddonRef.current = fitAddon;
+
+    term.writeln('\x1b[34m[FlashRun] \x1b[0m waiting for output...');
+
+    // 4. 监听事件: 捕获 Promise 防止 StrictMode 的多次渲染导致卸载时抛错或遗漏
+    const unlistenPromise = listen<string>('terminal-out', (event) => {
+      if (termRef.current) {
+        termRef.current.write(event.payload);
+      }
+    });
+
+    // 5. 监听窗口大小改变
+    const handleResize = () => {
+      if (fitAddonRef.current) {
+        fitAddonRef.current.fit();
+      }
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      unlistenPromise.then(unlistenFn => unlistenFn());
+      term.dispose();
+    };
+  }, []);
+
+  const handleClear = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (termRef.current) {
+      termRef.current.clear();
+      termRef.current.writeln('\x1b[34m[FlashRun] \x1b[0m buffer cleared.');
+    }
+  };
+
+  const handleCopyAll = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (termRef.current) {
+      termRef.current.selectAll();
+      const selection = termRef.current.getSelection();
+      termRef.current.clearSelection();
+      try {
+        await navigator.clipboard.writeText(selection);
+      } catch (err) {
+        console.error("Copy failed", err);
+      }
+    }
+  };
+
+  return (
+    <div className={`flex flex-col w-full h-full bg-slate-950/80 backdrop-blur rounded-t-xl overflow-hidden shadow-2xl border border-slate-800 border-b-0 ${className}`}>
+      {/* 终端专属 Header */}
+      <div className="h-10 px-4 bg-slate-900/50 border-b border-slate-800 flex justify-between items-center shrink-0">
+        <div className="flex space-x-2 items-center">
+          <div className="w-3 h-3 rounded-full bg-red-500"></div>
+          <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+          <div className="w-3 h-3 rounded-full bg-green-500"></div>
+        </div>
+        <div className="flex space-x-3 text-slate-400">
+          <button onClick={handleCopyAll} className="hover:text-white transition-colors p-1" title="复制所有输出">
+            <Copy size={16} />
+          </button>
+          <button onClick={handleClear} className="hover:text-red-400 transition-colors p-1" title="清空日志">
+            <Trash2 size={16} />
+          </button>
+        </div>
+      </div>
+      
+      {/* 终端主体区 */}
+      <div className="flex-1 p-3 overflow-hidden relative">
+        <div ref={terminalRef} className="w-full h-full" />
+      </div>
+    </div>
+  );
+};
+
+export default TerminalWindow;
