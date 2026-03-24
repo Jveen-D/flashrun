@@ -2,7 +2,8 @@ name: Release Builds
 on:
   push:
     tags:
-      - 'v*' # Trigger on tags like v1.0.0, v0.1.0-alpha, etc
+      - 'v*' # Trigger on tags like v1.0.0
+      - 'V*' # Trigger on tags like V1.0.0
 
 jobs:
   release:
