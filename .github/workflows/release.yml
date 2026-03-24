@@ -31,8 +31,6 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Install dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -53,5 +51,3 @@ jobs:
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true # Set to true to let you review before publishing
           prerelease: false
-          # Mac 平台构建通用架构（Intel + Apple Silicon）
-          args: ${{ matrix.platform == 'macos-latest' && '--target aarch64-apple-darwin --target x86_64-apple-darwin' || '' }}
