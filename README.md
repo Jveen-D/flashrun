@@ -11,11 +11,14 @@
   [![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
   <br />
 </div>
-
 <div align="center">
+  <br/>
+  <h2>🚀 立即体验 FlashRun</h2>
   <a href="https://github.com/Jveen-D/flashrun/releases/latest">
-    <img src="https://img.shields.io/github/v/release/Jveen-D/flashrun?style=for-the-badge&label=%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88&color=00e52b" alt="点击下载最新正式版" />
+    <img src="https://img.shields.io/github/v/release/Jveen-D/flashrun?style=for-the-badge&label=%E7%82%B9%E5%87%BB%E4%B8%8B%E8%BD%BD%E5%85%A8%E5%B9%B3%E5%8F%B0%E5%AE%89%E8%A3%85%E5%8C%85&color=00e52b&logo=github&logoColor=white" alt="点击下载最新全平台安装包" />
   </a>
+  <p><b>✨ 原生支持：🍏 macOS (Apple Silicon / Intel) &nbsp;|&nbsp; 🪟 Windows 10/11 ✨</b></p>
+  <br/>
 </div>
 
 ## 📖 什么是 FlashRun？
