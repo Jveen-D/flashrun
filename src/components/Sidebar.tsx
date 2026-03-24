@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useStore } from '../store';
 import { FolderKanban, Plus, Settings, PanelLeftClose, PanelLeft } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 
 interface SidebarProps {
   onOpenSettings: () => void;
@@ -13,8 +14,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
 
   const handleAddProject = async () => {
     try {
-      const path = await invoke<string | null>("open_project_dir");
-      if (path) {
+      const path = await open({
+        directory: true,
+        multiple: false,
+      });
+      if (typeof path === 'string') {
         const projectInfo = await invoke<{ manager: string, scripts: Record<string, string> }>("parse_project_info", { path });
         addProject(path, projectInfo.manager, projectInfo.scripts);
       }

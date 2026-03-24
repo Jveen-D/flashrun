@@ -4,14 +4,7 @@ use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
 use tauri::Emitter;
 
-#[tauri::command]
-fn open_project_dir(app: tauri::AppHandle) -> Option<String> {
-    // 弹出文件夹选择框 (使用同步方法 blocking_pick_folder)
-    let folder_path = app.dialog().file().blocking_pick_folder()?;
-    
-    // 获取绝对路径字符串
-    Some(folder_path.to_string())
-}
+
 
 use indexmap::IndexMap;
 use std::fs;
@@ -168,7 +161,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            open_project_dir, 
             parse_project_info, 
             run_command, 
             kill_command, 
