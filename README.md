@@ -1,7 +1,7 @@
 # ⚡ FlashRun 
 
 <div align="center">
-  <img src="./src-tauri/icons/128x128.png" width="128" alt="FlashRun Logo" />
+  <img src="./app-icon.jpg" width="128" style="border-radius: 20%" alt="FlashRun Logo" />
   
   <p><strong>一款为现代前端开发者设计的、极具赛博极客美学的多项目终端/启动器面板。</strong></p>
 
