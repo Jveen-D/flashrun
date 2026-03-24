@@ -1,13 +1,13 @@
 {
   "name": "flashrun",
   "private": true,
-  "version": "1.0.9",
+  "version": "1.0.10",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri dev"
+    "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
