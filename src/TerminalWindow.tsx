@@ -6,6 +6,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { Trash2, Copy } from 'lucide-react';
 import 'xterm/css/xterm.css';
 import { WebLinksAddon } from 'xterm-addon-web-links';
+import { useTranslation } from 'react-i18next';
 
 interface TerminalWindowProps {
   className?: string;
@@ -15,6 +16,7 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const { t } = useTranslation();
 
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -99,19 +101,19 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
   };
 
   return (
-    <div className={`flex flex-col w-full h-full bg-slate-950/80 backdrop-blur rounded-t-xl overflow-hidden shadow-2xl border border-slate-800 border-b-0 ${className}`}>
+    <div className={`flex flex-col w-full h-full bg-white/95 dark:bg-slate-950/80 backdrop-blur rounded-t-xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 border-b-0 transition-colors ${className}`}>
       {/* 终端专属 Header */}
-      <div className="h-10 px-4 bg-slate-900/50 border-b border-slate-800 flex justify-between items-center shrink-0">
+      <div className="h-10 px-4 bg-slate-100/50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center shrink-0 transition-colors">
         <div className="flex space-x-2 items-center">
-          <div className="w-3 h-3 rounded-full bg-red-500"></div>
-          <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
-          <div className="w-3 h-3 rounded-full bg-green-500"></div>
+          <div className="w-3 h-3 rounded-full bg-red-400 dark:bg-red-500 shadow-sm border border-red-500/20"></div>
+          <div className="w-3 h-3 rounded-full bg-yellow-400 dark:bg-yellow-500 shadow-sm border border-yellow-500/20"></div>
+          <div className="w-3 h-3 rounded-full bg-green-400 dark:bg-green-500 shadow-sm border border-green-500/20"></div>
         </div>
-        <div className="flex space-x-3 text-slate-400">
-          <button onClick={handleCopyAll} className="hover:text-white transition-colors p-1" title="复制所有输出">
+        <div className="flex space-x-3 text-slate-500 dark:text-slate-400">
+          <button onClick={handleCopyAll} className="hover:text-slate-900 dark:hover:text-white transition-colors p-1" title={t("复制所有输出")}>
             <Copy size={16} />
           </button>
-          <button onClick={handleClear} className="hover:text-red-400 transition-colors p-1" title="清空日志">
+          <button onClick={handleClear} className="hover:text-red-500 dark:hover:text-red-400 transition-colors p-1" title={t("清空日志")}>
             <Trash2 size={16} />
           </button>
         </div>

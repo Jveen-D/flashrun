@@ -20,6 +20,8 @@ export interface Project {
 
 export interface GlobalSettings {
   defaultEditor: 'code' | 'cursor' | 'codebuddy' | 'antigravity';
+  theme: 'dark' | 'light' | 'system';
+  language: 'zh' | 'en';
 }
 
 interface StoreState {
@@ -44,6 +46,8 @@ export const useStore = create<StoreState>((set) => ({
   activeProjectId: null,
   globalSettings: {
     defaultEditor: 'code',
+    theme: 'system',
+    language: 'zh',
   },
 
   addProject: (path, manager, scripts) => set((state) => {

@@ -1,4 +1,4 @@
-use tauri_plugin_dialog::DialogExt;
+
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
@@ -153,6 +153,28 @@ fn open_in_editor(path: String, editor_key: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn open_terminal(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/c", "start", "cmd"])
+            .current_dir(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("open")
+            .args(["-a", "Terminal", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -164,7 +186,8 @@ pub fn run() {
             parse_project_info, 
             run_command, 
             kill_command, 
-            open_in_editor
+            open_in_editor,
+            open_terminal
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
