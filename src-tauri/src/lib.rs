@@ -67,7 +67,12 @@ fn run_command(app: tauri::AppHandle, path: String, cmd: String, cmd_id: String)
     #[cfg(target_os = "windows")]
     let mut command = Command::new("cmd");
     #[cfg(target_os = "windows")]
-    command.args(["/c", &cmd]);
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW flag
+        command.creation_flags(0x08000000);
+        command.args(["/c", &cmd]);
+    }
 
     #[cfg(not(target_os = "windows"))]
     let mut command = Command::new("sh");
@@ -116,7 +121,9 @@ fn run_command(app: tauri::AppHandle, path: String, cmd: String, cmd_id: String)
 fn kill_command(pid: u32) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
         Command::new("taskkill")
+            .creation_flags(0x08000000)
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .output()
             .map_err(|e| e.to_string())?;
@@ -138,7 +145,11 @@ fn open_in_editor(path: String, editor_key: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut command = Command::new("cmd");
     #[cfg(target_os = "windows")]
-    command.args(["/c", &editor_key, &path]);
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+        command.args(["/c", &editor_key, &path]);
+    }
 
     #[cfg(not(target_os = "windows"))]
     let mut command = Command::new(&editor_key);
