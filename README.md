@@ -14,7 +14,7 @@
 
 <div align="center">
   <a href="https://github.com/Jveen-D/flashrun/releases/latest">
-    <img src="https://img.shields.io/github/v/release/Jveen-D/flashrun?style=for-the-badge&label=Download%20Latest%20Version&color=00e52b" alt="Download Latest Release" />
+    <img src="https://img.shields.io/github/v/release/Jveen-D/flashrun?style=for-the-badge&label=%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88&color=00e52b" alt="点击下载最新正式版" />
   </a>
 </div>
 
