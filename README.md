@@ -12,6 +12,12 @@
   <br />
 </div>
 
+<div align="center">
+  <a href="https://github.com/Jveen-D/flashrun/releases/latest">
+    <img src="https://img.shields.io/github/v/release/Jveen-D/flashrun?style=for-the-badge&label=Download%20Latest%20Version&color=00e52b" alt="Download Latest Release" />
+  </a>
+</div>
+
 ## 📖 什么是 FlashRun？
 
 如果你每天需要同时维护 3~5 个前端项目，受够了频繁地 `cd` 切目录、每次开机就要重敲 `pnpm dev` 并且终端窗口堆积如山……那么 **FlashRun** 就是你的终极解药。
@@ -32,7 +38,7 @@
 
 ## 📦 安装与下载 (免编译)
 
-最简单的方式，前往本仓库的 [**Releases 页面**](https://github.com/Jveen-D/flashrun/releases) 直接下载最新的安装包。
+最简单的方式，点击顶部的 Download Badge 或者前往本仓库的 [**Releases 最新发行版页面**](https://github.com/Jveen-D/flashrun/releases/latest) 直接下载安装包。
 得益于 GitHub Actions 云端构建，我们同时免费为您提供了：
 - 🍎 **macOS**: 支持 Intel 和 Apple Silicon M系列处理器 (`.dmg`)
 - 🏁 **Windows**: 支持标准安装与便携版 (`.msi` / `.exe`)
