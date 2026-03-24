@@ -46,6 +46,14 @@
 - 🍎 **macOS**: 支持 Intel 和 Apple Silicon M系列处理器 (`.dmg`)
 - 🏁 **Windows**: 支持标准安装与便携版 (`.msi` / `.exe`)
 
+> ⚠️ **macOS 安装须知 (必看)**：
+> 由于本应用为未购买 Apple 开发者证书的开源构建版，当您首次在 Mac 上打开下载的 `.app` 时，系统可能会因安全拦截而误报：**`"FlashRun.app"已损坏，无法打开。您应该将它移到废纸篓。`**
+> 
+> **解决方法**：打开您的 Mac `终端 (Terminal)`，运行以下放行命令去隔离即可正常打开（假设您已将其拖入「应用程序」文件夹）：
+> ```bash
+> sudo xattr -rd com.apple.quarantine /Applications/FlashRun.app
+> ```
+
 ---
 
 ## 🛠️ 想要参与开发？
