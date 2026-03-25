@@ -55,7 +55,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       >
         {!hideLabelDisplay && <span className="truncate">{selectedOption.label}</span>}
         {!hideChevron && (
-          <ChevronDown size={14} className={`shrink-0 ml-2 transition-transform duration-200 text-slate-400 ${isOpen ? 'rotate-180 text-blue-400' : ''}`} />
+          <ChevronDown size={14} className={`shrink-0 transition-transform duration-200 text-slate-400 ${!hideLabelDisplay ? 'ml-2' : ''} ${isOpen ? 'rotate-180 text-blue-400' : ''}`} />
         )}
       </button>
 
