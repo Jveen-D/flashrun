@@ -85,7 +85,7 @@ export const TopBar: React.FC = () => {
             <span className="whitespace-nowrap">{t("在 {{editor}} 中打开", { editor: editorLabelMap[globalSettings.defaultEditor] || t("编辑器") })}</span>
           </button>
           <div className="w-px bg-blue-200 dark:bg-blue-500/30 group-hover:bg-blue-300 dark:group-hover:bg-blue-500/80 transition-colors"></div>
-          <div className="relative flex items-center text-blue-600 dark:text-blue-400 hover:text-white hover:bg-blue-600 transition-colors rounded-r-lg">
+          <div className="flex items-stretch self-stretch text-blue-600 dark:text-blue-400 hover:text-white hover:bg-blue-600 transition-colors rounded-r-lg">
             <CustomSelect
               value={globalSettings.defaultEditor}
               onChange={(val) => updateGlobalSettings({ defaultEditor: val as any })}
@@ -95,7 +95,7 @@ export const TopBar: React.FC = () => {
                 { label: "Codebuddy", value: "codebuddy" },
                 { label: "Antigravity", value: "antigravity" }
               ]}
-              buttonClassName="flex items-center justify-center px-2 py-1.5 cursor-pointer h-full rounded-r-lg focus:outline-none"
+              buttonClassName="flex items-center justify-center px-3 cursor-pointer rounded-r-lg focus:outline-none h-full"
               dropdownClassName="right-0 top-full mt-2 w-40"
               hideChevron={false}
               hideLabelDisplay

@@ -14,6 +14,7 @@ function App() {
   const { projects, activeProjectId, globalSettings, updateGlobalSettings, hydrate } = useStore();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(340);
+  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const isDragging = useRef(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
@@ -21,6 +22,8 @@ function App() {
   
   const activeProject = projects.find(p => p.id === activeProjectId);
   const isAnyRunning = activeProject?.commands.some(c => c.status === 'running');
+  // 有任务在跑时自动展开终端；用户也可手动展开/收起
+  const terminalVisible = isAnyRunning || isTerminalOpen;
 
   useEffect(() => { hydrate(); }, []);
 
@@ -68,17 +71,17 @@ function App() {
           <>
             <TopBar />
             
-            <div className="flex-1 overflow-y-auto w-full no-scrollbar" style={{ paddingBottom: isAnyRunning ? terminalHeight : 40 }}>
+            <div className="flex-1 overflow-y-auto w-full no-scrollbar" style={{ paddingBottom: terminalVisible ? terminalHeight : 40 }}>
               <ActionGrid />
             </div>
 
             {/* 底部终端抽屉区域 */}
             <div 
-              className={`absolute bottom-0 left-0 w-full transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] z-20`}
-              style={{ height: terminalHeight, transform: isAnyRunning ? 'translateY(0)' : `translateY(calc(100% - 40px))` }}
+              className="absolute bottom-0 left-0 w-full transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] z-20"
+              style={{ height: terminalHeight, transform: terminalVisible ? 'translateY(0)' : `translateY(calc(100% - 40px))` }}
             >
-              {/* 拖拽调整高度手柄 */}
-              {isAnyRunning && (
+              {/* 拖拽调整高度手柄（展开时显示） */}
+              {terminalVisible && (
                 <div
                   onMouseDown={handleDragStart}
                   className="absolute -top-1 left-0 w-full h-2 cursor-ns-resize z-30 flex items-center justify-center group"
@@ -88,14 +91,20 @@ function App() {
                 </div>
               )}
 
-              {/* Header 占位符供收起时点击展开/折叠 */}
-              {!isAnyRunning && (
-                <div className="absolute top-0 w-full h-10 z-30 flex items-center px-4 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-t border-slate-200 dark:border-slate-800 text-slate-500 cursor-not-allowed uppercase tracking-wider text-xs font-bold rounded-t-xl" title="Click 'Run' on any command to auto-open">
-                  {t('Console Output (Folded)')}
+              {/* Header 折叠条 - 点击可手动展开/收起 */}
+              {!terminalVisible && (
+                <div
+                  onClick={() => setIsTerminalOpen(true)}
+                  className="absolute top-0 w-full h-10 z-30 flex items-center px-4 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-t border-slate-200 dark:border-slate-800 text-slate-400 dark:text-slate-500 cursor-pointer hover:text-blue-500 dark:hover:text-blue-400 uppercase tracking-wider text-xs font-bold rounded-t-xl transition-colors group"
+                  title="点击展开终端"
+                >
+                  <span className="mr-2 group-hover:translate-y-[-1px] transition-transform inline-block">▲</span>
+                  {t('Console Output')}
                 </div>
               )}
-              
-              <TerminalWindow key={activeProjectId} className="h-full w-full" />
+
+              {/* 运行中时，终端 Header 内嵌展示关闭按钮 - 由 TerminalWindow 内部控制 */}
+              <TerminalWindow key={activeProjectId} className="h-full w-full" onClose={() => setIsTerminalOpen(false)} />
             </div>
           </>
         ) : (

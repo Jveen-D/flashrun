@@ -3,16 +3,17 @@ import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { Trash2, Copy } from 'lucide-react';
+import { Trash2, Copy, ChevronDown } from 'lucide-react';
 import 'xterm/css/xterm.css';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { useTranslation } from 'react-i18next';
 
 interface TerminalWindowProps {
   className?: string;
+  onClose?: () => void;
 }
 
-const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
+const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '', onClose }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -124,6 +125,11 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
           <button onClick={handleClear} className="hover:text-red-500 dark:hover:text-red-400 transition-colors p-1" title={t("清空日志")}>
             <Trash2 size={16} />
           </button>
+          {onClose && (
+            <button onClick={onClose} className="hover:text-blue-500 dark:hover:text-blue-400 transition-colors p-1" title={t("收起终端")}>
+              <ChevronDown size={16} />
+            </button>
+          )}
         </div>
       </div>
       
