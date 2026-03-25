@@ -91,9 +91,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
                   
                   {/* 呼吸灯特效 (右上角) */}
                   {isRunning && (
-                    <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 z-20">
+                    <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 z-20 items-center justify-center">
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500 border-2 border-slate-900 transform translate-x-0 translate-y-0"></span>
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
                     </span>
                   )}
                 </div>
