@@ -1,12 +1,17 @@
 import React from 'react';
 import { useStore } from '../store';
-import { FolderOpen, Folder } from 'lucide-react';
+import { FolderOpen, Folder, SquareTerminal } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { CustomSelect } from './CustomSelect';
 import { useTranslation } from 'react-i18next';
 
-export const TopBar: React.FC = () => {
+interface TopBarProps {
+  isTerminalOpen: boolean;
+  onTerminalToggle: () => void;
+}
+
+export const TopBar: React.FC<TopBarProps> = ({ isTerminalOpen, onTerminalToggle }) => {
   const { projects, activeProjectId, globalSettings, updateProjectManager, updateGlobalSettings } = useStore();
   const { t } = useTranslation();
   
@@ -74,7 +79,21 @@ export const TopBar: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex items-center shrink-0">
+      <div className="flex items-center gap-2 shrink-0">
+        {/* 终端切换按钮 */}
+        <button
+          onClick={onTerminalToggle}
+          title={isTerminalOpen ? t('收起终端') : t('打开终端')}
+          className={`flex items-center justify-center w-8 h-8 rounded-lg border transition-colors ${
+            isTerminalOpen
+              ? 'bg-blue-600 text-white border-blue-600 shadow shadow-blue-600/30'
+              : 'border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 hover:border-blue-400'
+          }`}
+        >
+          <SquareTerminal size={15} />
+        </button>
+
+        {/* 编辑器打开按钮组 */}
         <div className="flex items-stretch bg-blue-50 dark:bg-blue-600/10 border border-blue-200 dark:border-blue-500/40 rounded-lg shadow-sm group transition-colors">
           <button 
             onClick={handleOpenEditor}
