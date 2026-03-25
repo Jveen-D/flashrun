@@ -85,7 +85,7 @@ export const TopBar: React.FC = () => {
             <span className="whitespace-nowrap">{t("在 {{editor}} 中打开", { editor: editorLabelMap[globalSettings.defaultEditor] || t("编辑器") })}</span>
           </button>
           <div className="w-px bg-blue-200 dark:bg-blue-500/30 group-hover:bg-blue-300 dark:group-hover:bg-blue-500/80 transition-colors"></div>
-          <div className="relative flex items-center px-1 text-blue-600 dark:text-blue-400 hover:text-white hover:bg-blue-600 transition-colors cursor-pointer group/arrow border-l border-transparent rounded-r-lg">
+          <div className="relative flex items-center text-blue-600 dark:text-blue-400 hover:text-white hover:bg-blue-600 transition-colors rounded-r-lg">
             <CustomSelect
               value={globalSettings.defaultEditor}
               onChange={(val) => updateGlobalSettings({ defaultEditor: val as any })}
@@ -95,11 +95,9 @@ export const TopBar: React.FC = () => {
                 { label: "Codebuddy", value: "codebuddy" },
                 { label: "Antigravity", value: "antigravity" }
               ]}
-              buttonClassName="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
+              buttonClassName="flex items-center justify-center px-2 py-1.5 cursor-pointer h-full rounded-r-lg text-inherit hover:text-inherit focus:outline-none"
               dropdownClassName="right-0 top-full mt-2 w-40"
-              hideChevron={true}
             />
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-80 transition-transform group-hover/arrow:-translate-y-0.5"><path d="m6 9 6 6 6-6"/></svg>
           </div>
         </div>
       </div>

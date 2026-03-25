@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { ActionGrid } from "./components/ActionGrid";
@@ -13,15 +13,16 @@ import "./App.css";
 function App() {
   const { projects, activeProjectId, globalSettings, updateGlobalSettings, hydrate } = useStore();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [terminalHeight, setTerminalHeight] = useState(340);
+  const isDragging = useRef(false);
+  const dragStartY = useRef(0);
+  const dragStartHeight = useRef(0);
   const { t, i18n } = useTranslation();
   
   const activeProject = projects.find(p => p.id === activeProjectId);
   const isAnyRunning = activeProject?.commands.some(c => c.status === 'running');
 
-  // 应用启动时从磁盘恢复数据
-  useEffect(() => {
-    hydrate();
-  }, []);
+  useEffect(() => { hydrate(); }, []);
 
   useEffect(() => {
     i18n.changeLanguage(globalSettings.language || "zh");
@@ -37,6 +38,25 @@ function App() {
     }
   }, [globalSettings.theme]);
 
+  const handleDragStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    dragStartY.current = e.clientY;
+    dragStartHeight.current = terminalHeight;
+    const handleMouseMove = (ev: MouseEvent) => {
+      if (!isDragging.current) return;
+      const delta = dragStartY.current - ev.clientY;
+      setTerminalHeight(Math.min(700, Math.max(180, dragStartHeight.current + delta)));
+    };
+    const handleMouseUp = () => {
+      isDragging.current = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
+
   return (
     <div className="h-screen w-screen flex bg-slate-50 dark:bg-[#0B0F19] font-sans overflow-hidden text-slate-800 dark:text-slate-300 transition-colors duration-300">
       {/* 极窄侧边栏 */}
@@ -48,14 +68,26 @@ function App() {
           <>
             <TopBar />
             
-            <div className="flex-1 overflow-y-auto w-full no-scrollbar pb-[400px]">
+            <div className="flex-1 overflow-y-auto w-full no-scrollbar" style={{ paddingBottom: isAnyRunning ? terminalHeight : 40 }}>
               <ActionGrid />
             </div>
 
-            {/* 底部终端抽屉区域 (由于 TerminalWindow 自身拥有背景和 Header，这里简化外层包裹) */}
-            <div className={`absolute bottom-0 left-0 w-full transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] z-20 ${
-              isAnyRunning ? 'translate-y-0 h-[340px]' : 'translate-y-[calc(100%-40px)] h-[340px]'
-            }`}>
+            {/* 底部终端抽屉区域 */}
+            <div 
+              className={`absolute bottom-0 left-0 w-full transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] z-20`}
+              style={{ height: terminalHeight, transform: isAnyRunning ? 'translateY(0)' : `translateY(calc(100% - 40px))` }}
+            >
+              {/* 拖拽调整高度手柄 */}
+              {isAnyRunning && (
+                <div
+                  onMouseDown={handleDragStart}
+                  className="absolute -top-1 left-0 w-full h-2 cursor-ns-resize z-30 flex items-center justify-center group"
+                  title="拖拽调整终端高度"
+                >
+                  <div className="w-12 h-1 bg-slate-300 dark:bg-slate-700 rounded-full group-hover:bg-blue-400 dark:group-hover:bg-blue-500 transition-colors" />
+                </div>
+              )}
+
               {/* Header 占位符供收起时点击展开/折叠 */}
               {!isAnyRunning && (
                 <div className="absolute top-0 w-full h-10 z-30 flex items-center px-4 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-t border-slate-200 dark:border-slate-800 text-slate-500 cursor-not-allowed uppercase tracking-wider text-xs font-bold rounded-t-xl" title="Click 'Run' on any command to auto-open">
