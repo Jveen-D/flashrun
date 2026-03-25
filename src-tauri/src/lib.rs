@@ -1,5 +1,5 @@
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, ChildStdin};
 use std::io::{BufRead, BufReader, Write};
 use std::collections::HashMap;
@@ -9,6 +9,61 @@ use tauri::Emitter;
 use indexmap::IndexMap;
 use std::fs;
 use serde::{Deserialize, Serialize};
+
+const CONFIG_FILE_NAME: &str = "flashrun-config.json";
+const LEGACY_APP_IDENTIFIER: &str = "com.d8506.flashrun";
+
+fn config_file_path() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        return Ok(PathBuf::from(user_profile).join(CONFIG_FILE_NAME));
+    }
+
+    std::env::var("HOME")
+        .map(|home| PathBuf::from(home).join(CONFIG_FILE_NAME))
+        .map_err(|_| "无法确定配置文件保存目录。".to_string())
+}
+
+fn legacy_config_file_path() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var("APPDATA")
+            .ok()
+            .map(|app_data| PathBuf::from(app_data).join(LEGACY_APP_IDENTIFIER).join(CONFIG_FILE_NAME));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+fn migrate_legacy_config_if_needed(target_path: &Path) -> Result<(), String> {
+    if target_path.exists() {
+        return Ok(());
+    }
+
+    let Some(legacy_path) = legacy_config_file_path() else {
+        return Ok(());
+    };
+
+    if !legacy_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&legacy_path)
+        .map_err(|e| format!("读取旧配置失败: {}", e))?;
+
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("创建配置目录失败: {}", e))?;
+    }
+
+    fs::write(target_path, content)
+        .map_err(|e| format!("迁移旧配置失败: {}", e))?;
+
+    Ok(())
+}
 
 // ---------- 进程 stdin 管理器 ----------
 struct ProcessManager {
@@ -66,6 +121,46 @@ fn parse_project_info(path: String) -> Result<ProjectInfo, String> {
         manager: manager.to_string(),
         scripts,
     })
+}
+
+#[tauri::command]
+fn load_app_config() -> Result<Option<serde_json::Value>, String> {
+    let path = config_file_path()?;
+    migrate_legacy_config_if_needed(&path)?;
+
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("读取配置文件失败: {}", e))?;
+
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let config = serde_json::from_str(&content)
+        .map_err(|e| format!("解析配置文件失败: {}", e))?;
+
+    Ok(Some(config))
+}
+
+#[tauri::command]
+fn save_app_config(config: serde_json::Value) -> Result<String, String> {
+    let path = config_file_path()?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("创建配置目录失败: {}", e))?;
+    }
+
+    let content = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("序列化配置失败: {}", e))?;
+
+    fs::write(&path, content)
+        .map_err(|e| format!("写入配置文件失败: {}", e))?;
+
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -290,6 +385,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             parse_project_info,
+            load_app_config,
+            save_app_config,
             run_command,
             send_input,
             create_shell_session,

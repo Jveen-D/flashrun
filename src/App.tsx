@@ -9,22 +9,31 @@ import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "./App.css";
 
-
 function App() {
-  const { projects, activeProjectId, globalSettings, updateGlobalSettings, hydrate, isTerminalOpen, setTerminalOpen, toggleTerminal } = useStore();
+  const {
+    projects,
+    activeProjectId,
+    globalSettings,
+    updateGlobalSettings,
+    hydrate,
+    isTerminalOpen,
+    terminalHeight,
+    setTerminalOpen,
+    setTerminalHeight,
+    toggleTerminal,
+  } = useStore();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [terminalHeight, setTerminalHeight] = useState(340);
   const isDragging = useRef(false);
-  const dragStartY = useRef(0);
-  const dragStartHeight = useRef(0);
   const { t, i18n } = useTranslation();
-  
-  const activeProject = projects.find(p => p.id === activeProjectId);
-  const isAnyRunning = activeProject?.commands.some(c => c.status === 'running');
-  // 有任务跑时自动展开，用户也可通过 TopBar 按钮切换
-  const terminalVisible = isAnyRunning || isTerminalOpen;
 
-  useEffect(() => { hydrate(); }, []);
+  const activeProject = projects.find((project) => project.id === activeProjectId);
+  const isAnyRunning = activeProject?.commands.some((command) => command.status === 'running');
+  const terminalVisible = isAnyRunning || isTerminalOpen;
+  const [isDraggingState, setIsDraggingState] = useState(false);
+
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
 
   useEffect(() => {
     i18n.changeLanguage(globalSettings.language || "zh");
@@ -39,54 +48,50 @@ function App() {
       root.classList.toggle('dark', globalSettings.theme === 'dark');
     }
   }, [globalSettings.theme]);
-  const [isDraggingState, setIsDraggingState] = useState(false);
 
-  const handleDragStart = (e: React.MouseEvent) => {
-    e.preventDefault();
+  const handleDragStart = (event: React.MouseEvent) => {
+    event.preventDefault();
     isDragging.current = true;
     setIsDraggingState(true);
-    dragStartY.current = e.clientY;
-    dragStartHeight.current = terminalHeight;
-    const handleMouseMove = (ev: MouseEvent) => {
-      if (!isDragging.current) return;
-      // 终端在底部，高度 = 屏幕总高度 - 鼠标 Y 坐标
-      // 鼠标向上移动 (clientY 减小) -> 高度增加
-      const h = window.innerHeight - ev.clientY;
-      setTerminalHeight(Math.max(150, Math.min(800, h)));
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!isDragging.current) {
+        return;
+      }
+
+      const nextHeight = window.innerHeight - moveEvent.clientY;
+      setTerminalHeight(nextHeight);
     };
+
     const handleMouseUp = () => {
       isDragging.current = false;
       setIsDraggingState(false);
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
+
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
   };
 
   return (
     <div className="h-screen w-screen flex bg-slate-50 dark:bg-[#0B0F19] font-sans overflow-hidden text-slate-800 dark:text-slate-300 transition-colors duration-300">
-      {/* 极窄侧边栏 */}
       <Sidebar onOpenSettings={() => setIsSettingsOpen(true)} />
-      
-      {/* 主面板内容区 */}
+
       <div className="flex-1 flex flex-col relative w-full h-full overflow-hidden">
         {activeProject ? (
           <>
             <TopBar isTerminalOpen={isTerminalOpen} onTerminalToggle={toggleTerminal} />
-            
-            {/* 这里移除动态 paddingBottom，因为终端在 flex 布局中已经占位了 */}
+
             <div className="flex-1 overflow-y-auto w-full no-scrollbar">
               <ActionGrid />
             </div>
 
-            {/* 底部终端面板 */}
             {terminalVisible && (
               <div
                 className={`relative shrink-0 ${isDraggingState ? '' : 'transition-all duration-300'}`}
                 style={{ height: terminalHeight }}
               >
-                {/* 拖拽调整高度手柄 */}
                 <div
                   onMouseDown={handleDragStart}
                   className="absolute -top-1 left-0 w-full h-2 cursor-ns-resize z-30 flex items-center justify-center group"
@@ -115,7 +120,6 @@ function App() {
         )}
       </div>
 
-      {/* Settings Modal (Editor settings) */}
       {isSettingsOpen && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/20 dark:bg-black/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 w-96 rounded-2xl shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-200">
@@ -125,19 +129,19 @@ function App() {
                 <X size={20} />
               </button>
             </div>
-            
+
             <div className="p-6 space-y-6">
               <div>
                 <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">{t('默认代码编辑器')}</label>
                 <p className="text-xs text-slate-500 mb-4">{t('当在 TopBar 点击“打开”时，系统将通过此关联唤起对应应用解析该项目目录。')}</p>
-                <CustomSelect 
+                <CustomSelect
                   value={globalSettings.defaultEditor}
                   onChange={(val) => updateGlobalSettings({ defaultEditor: val as any })}
                   options={[
                     { label: "Visual Studio Code (code)", value: "code" },
                     { label: "Cursor (cursor)", value: "cursor" },
                     { label: "Codebuddy", value: "codebuddy" },
-                    { label: "Antigravity Internal", value: "antigravity" }
+                    { label: "Antigravity Internal", value: "antigravity" },
                   ]}
                 />
               </div>
@@ -145,24 +149,24 @@ function App() {
               <div className="flex gap-4">
                 <div className="flex-1">
                   <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">{t('主题')}</label>
-                  <CustomSelect 
+                  <CustomSelect
                     value={globalSettings.theme}
                     onChange={(val) => updateGlobalSettings({ theme: val as any })}
                     options={[
                       { label: t("跟随系统"), value: "system" },
                       { label: t("浅色模式"), value: "light" },
-                      { label: t("深色模式"), value: "dark" }
+                      { label: t("深色模式"), value: "dark" },
                     ]}
                   />
                 </div>
                 <div className="flex-1">
                   <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">{t('语言')}</label>
-                  <CustomSelect 
+                  <CustomSelect
                     value={globalSettings.language}
                     onChange={(val) => updateGlobalSettings({ language: val as any })}
                     options={[
                       { label: "中文", value: "zh" },
-                      { label: "English", value: "en" }
+                      { label: "English", value: "en" },
                     ]}
                   />
                 </div>
@@ -170,7 +174,7 @@ function App() {
             </div>
 
             <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 flex justify-end rounded-b-2xl">
-              <button 
+              <button
                 onClick={() => setIsSettingsOpen(false)}
                 className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-medium text-sm transition-colors shadow-lg shadow-blue-600/20"
               >
