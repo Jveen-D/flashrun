@@ -47,8 +47,8 @@ function App() {
     dragStartHeight.current = terminalHeight;
     const handleMouseMove = (ev: MouseEvent) => {
       if (!isDragging.current) return;
-      const delta = dragStartY.current - ev.clientY;
-      setTerminalHeight(Math.min(700, Math.max(180, dragStartHeight.current + delta)));
+      const delta = ev.clientY - dragStartY.current;
+      setTerminalHeight(Math.min(700, Math.max(180, dragStartHeight.current - delta)));
     };
     const handleMouseUp = () => {
       isDragging.current = false;
