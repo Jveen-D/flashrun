@@ -10,26 +10,30 @@ import { useStore } from './store';
 
 interface TerminalWindowProps {
   className?: string;
+  /** 用于创建 shell session 的工作目录 */
+  workingDir?: string;
+  /** 本标签页唯一 ID，用于区分 shell-out 事件 */
+  sessionId?: string;
 }
 
-const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
+const TerminalWindow: React.FC<TerminalWindowProps> = ({
+  className = '',
+  workingDir,
+  sessionId,
+}) => {
   const { projects, activeProjectId } = useStore();
+  const activeProject = projects.find(p => p.id === activeProjectId);
+  const resolvedDir = workingDir ?? activeProject?.path ?? '.';
+
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-
-  // 收集当前所有正在运行的命令 pid，用于 stdin 转发
-  const activeProject = projects.find(p => p.id === activeProjectId);
-  const runningPids = (activeProject?.commands ?? [])
-    .filter(c => c.status === 'running' && c.pid != null)
-    .map(c => c.pid as number);
-  const runningPidsRef = useRef<number[]>(runningPids);
-
-  useEffect(() => { runningPidsRef.current = runningPids; }, [runningPids]);
+  const shellPidRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!terminalRef.current) return;
 
+    // ── 1. 初始化 xterm ──────────────────────────────────────────
     const term = new Terminal({
       theme: {
         background: 'transparent',
@@ -39,67 +43,119 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
       },
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       fontSize: 13,
-      convertEol: true,
+      convertEol: false,        // 关闭自动转换，我们手动处理换行
       allowTransparency: true,
       cursorBlink: true,
       scrollback: 5000,
+      disableStdin: false,      // 确保允许输入
     });
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
     const webLinksAddon = new WebLinksAddon((e: MouseEvent, uri: string) => {
-      if (e.ctrlKey || e.metaKey) {
-        openUrl(uri).catch((err: any) => console.error('打开链接失败:', err));
-      }
+      if (e.ctrlKey || e.metaKey) openUrl(uri).catch(console.error);
     });
     term.loadAddon(webLinksAddon);
 
     term.open(terminalRef.current);
     fitAddon.fit();
-    // 挂载后立即 focus，让用户无需先点击就能输入
     setTimeout(() => term.focus(), 50);
 
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    term.writeln('\x1b[34m[FlashRun]\x1b[0m Terminal ready.');
+    // ── 2. 启动持久化 shell session ──────────────────────────────
+    let shellPid: number | null = null;
 
-    // 用户键盘输入处理：
-    // 1. 如果有运行中的进程，将输入发送到进程 stdin
-    // 2. 不管有没有进程，都本地回显（让字符出现在屏幕上）
-    term.onData((data) => {
-      const pids = runningPidsRef.current;
-      if (pids.length > 0) {
-        for (const pid of pids) {
-          invoke('send_input', { pid, data }).catch((err) =>
-            console.warn('send_input error:', err)
-          );
-        }
-      } else {
-        // 没有运行中的进程时，本地回显（方便用户看到自己在输入）
-        term.write(data);
-      }
+    invoke<number>('create_shell_session', {
+      sessionId: sessionId ?? 'default',
+      workingDir: resolvedDir,
+    }).then((pid) => {
+      shellPid = pid;
+      shellPidRef.current = pid;
+      term.writeln('\x1b[34m[FlashRun]\x1b[0m Shell ready. Type commands below.\r');
+    }).catch((err) => {
+      term.writeln(`\x1b[31m[FlashRun] Shell init failed: ${err}\x1b[0m\r`);
     });
 
-    const unlistenPromise = listen<string>('terminal-out', (event) => {
+    // ── 3. 监听 shell 输出 ────────────────────────────────────────
+    const shellUnlistenPromise = listen<string>(
+      `shell-out-${sessionId ?? 'default'}`,
+      (event) => { if (termRef.current) termRef.current.write(event.payload); }
+    );
+
+    // ── 4. 监听 npm 脚本输出（global terminal-out 事件）──────────
+    const npmUnlistenPromise = listen<string>('terminal-out', (event) => {
       if (termRef.current) termRef.current.write(event.payload);
     });
 
-    const handleResize = () => {
-      if (fitAddonRef.current) fitAddonRef.current.fit();
-    };
-    window.addEventListener('resize', handleResize);
+    // ── 5. 键盘输入：行缓冲 + 本地回显 ──────────────────────────
+    let inputBuf = '';
 
+    term.onData((data) => {
+      const code = data.charCodeAt(0);
+
+      // 回车：发送命令到 shell
+      if (data === '\r') {
+        term.write('\r\n');
+        const line = inputBuf;
+        inputBuf = '';
+        if (shellPid != null && line.trim().length > 0) {
+          invoke('send_input', { pid: shellPid, data: line + '\n' }).catch(console.warn);
+        }
+        return;
+      }
+
+      // Backspace (DEL or BS)
+      if (data === '\x7f' || data === '\b') {
+        if (inputBuf.length > 0) {
+          inputBuf = inputBuf.slice(0, -1);
+          term.write('\b \b');
+        }
+        return;
+      }
+
+      // Ctrl+C：发送 ETX 中断信号
+      if (data === '\x03') {
+        if (shellPid != null) {
+          invoke('send_input', { pid: shellPid, data: '\x03' }).catch(console.warn);
+        }
+        term.write('^C\r\n');
+        inputBuf = '';
+        return;
+      }
+
+      // Ctrl+L：清屏
+      if (data === '\x0c') {
+        term.clear();
+        inputBuf = '';
+        return;
+      }
+
+      // 跳过不可打印控制字符（方向键等），只处理可打印字符
+      if (code < 0x20 && data !== '\t') return;
+
+      // 普通可打印字符 + Tab：本地回显
+      inputBuf += data;
+      term.write(data);
+    });
+
+    // ── 6. ResizeObserver 让 xterm 跟随容器尺寸 ──────────────────
+    window.addEventListener('resize', () => fitAddonRef.current?.fit());
     const observer = new ResizeObserver(() => {
       requestAnimationFrame(() => fitAddonRef.current?.fit());
     });
     if (terminalRef.current) observer.observe(terminalRef.current);
 
     return () => {
-      window.removeEventListener('resize', handleResize);
       observer.disconnect();
-      unlistenPromise.then(fn => fn());
+      shellUnlistenPromise.then(fn => fn());
+      npmUnlistenPromise.then(fn => fn());
+      // 关闭 shell session（kill）
+      if (shellPid != null) {
+        invoke('kill_command', { pid: shellPid }).catch(() => {});
+      }
       term.dispose();
     };
   }, []);
@@ -109,7 +165,7 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
       className={`flex flex-col w-full h-full overflow-hidden ${className}`}
       onClick={() => termRef.current?.focus()}
     >
-      <div className="flex-1 p-2 overflow-hidden">
+      <div className="flex-1 overflow-hidden p-2">
         <div ref={terminalRef} className="w-full h-full" />
       </div>
     </div>

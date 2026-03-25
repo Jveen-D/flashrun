@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { Plus, X, Terminal as TerminalIcon } from 'lucide-react';
 import TerminalWindow from '../TerminalWindow';
 import { nanoid } from 'nanoid';
+import { useStore } from '../store';
 
 interface TerminalTab {
   id: string;
@@ -15,6 +16,9 @@ interface TerminalPanelProps {
 }
 
 const TerminalPanel: React.FC<TerminalPanelProps> = ({ className = '', onClose, activeProjectId }) => {
+  const { projects } = useStore();
+  const activeProject = projects.find(p => p.id === activeProjectId);
+  const workingDir = activeProject?.path ?? '.';
   const [tabs, setTabs] = useState<TerminalTab[]>([{ id: nanoid(), title: 'Terminal 1' }]);
   const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
 

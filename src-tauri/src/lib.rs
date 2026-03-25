@@ -11,7 +11,6 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 
 // ---------- 进程 stdin 管理器 ----------
-// 保存所有正在运行的子进程 stdin 句柄，key = pid
 struct ProcessManager {
     stdinmap: Mutex<HashMap<u32, ChildStdin>>,
 }
@@ -93,14 +92,13 @@ fn run_command(
 
     command
         .current_dir(&path)
-        .stdin(Stdio::piped())   // ← 必须 piped 才能写入
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     let mut child = command.spawn().map_err(|e| e.to_string())?;
     let pid = child.id();
 
-    // 保存 stdin 句柄
     if let Some(stdin) = child.stdin.take() {
         let mut map = state.stdinmap.lock().unwrap();
         map.insert(pid, stdin);
@@ -134,7 +132,7 @@ fn run_command(
     Ok(pid)
 }
 
-/// 向指定 PID 的子进程 stdin 写入数据
+/// 向指定 PID 的子进程 stdin 写入数据（用于 npm script 交互输入）
 #[tauri::command]
 fn send_input(
     state: tauri::State<ProcessManager>,
@@ -151,12 +149,90 @@ fn send_input(
     }
 }
 
+/// 为每个终端标签页创建一个持久化 shell 进程
+/// session_id 对应前端 tab 的唯一 ID，输出事件为 shell-out-{session_id}
+#[tauri::command]
+fn create_shell_session(
+    app: tauri::AppHandle,
+    state: tauri::State<ProcessManager>,
+    session_id: String,
+    working_dir: String,
+) -> Result<u32, String> {
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd.exe");
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x08000000);
+        c
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        Command::new(shell)
+    };
+
+    cmd.current_dir(&working_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let pid = child.id();
+
+    // 保存 stdin
+    if let Some(stdin) = child.stdin.take() {
+        let mut map = state.stdinmap.lock().unwrap();
+        map.insert(pid, stdin);
+    }
+
+    // 流式读取 stdout
+    if let Some(stdout) = child.stdout.take() {
+        let app_out = app.clone();
+        let sid_out = session_id.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if let Ok(content) = line {
+                    let _ = app_out.emit(
+                        &format!("shell-out-{}", sid_out),
+                        format!("{}\r\n", content),
+                    );
+                }
+            }
+        });
+    }
+
+    // 流式读取 stderr
+    if let Some(stderr) = child.stderr.take() {
+        let app_err = app.clone();
+        let sid_err = session_id.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(content) = line {
+                    let _ = app_err.emit(
+                        &format!("shell-out-{}", sid_err),
+                        format!("\x1b[31m{}\x1b[0m\r\n", content),
+                    );
+                }
+            }
+        });
+    }
+
+    // 回收子进程（防止僵尸进程）
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+
+    Ok(pid)
+}
+
 #[tauri::command]
 fn kill_command(
     state: tauri::State<ProcessManager>,
     pid: u32,
 ) -> Result<(), String> {
-    // 关闭 stdin 让进程感知 EOF
     {
         let mut map = state.stdinmap.lock().unwrap();
         map.remove(&pid);
@@ -203,28 +279,6 @@ fn open_in_editor(path: String, editor_key: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn open_terminal(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("cmd")
-            .args(["/c", "start", "cmd"])
-            .current_dir(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Command::new("open")
-            .args(["-a", "Terminal", &path])
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -238,9 +292,9 @@ pub fn run() {
             parse_project_info,
             run_command,
             send_input,
+            create_shell_session,
             kill_command,
             open_in_editor,
-            open_terminal
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
