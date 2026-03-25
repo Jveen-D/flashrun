@@ -2,11 +2,13 @@ import React, { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Trash2, Copy, ChevronDown } from 'lucide-react';
 import 'xterm/css/xterm.css';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { useTranslation } from 'react-i18next';
+import { useStore } from './store';
 
 interface TerminalWindowProps {
   className?: string;
@@ -14,10 +16,18 @@ interface TerminalWindowProps {
 }
 
 const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '', onClose }) => {
+  const { projects, activeProjectId } = useStore();
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  // 收集当前所有正在运行的命令 pid，用于 stdin 转发
+  const activeProject = projects.find(p => p.id === activeProjectId);
+  const runningPids = (activeProject?.commands ?? []).filter(c => c.status === 'running' && c.pid != null).map(c => c.pid as number);
+  const runningPidsRef = useRef<number[]>(runningPids);
   const { t } = useTranslation();
+
+  // 每次 running pids 变化时同步到 ref（避免 useEffect 中的闭包陷阱）
+  useEffect(() => { runningPidsRef.current = runningPids; }, [runningPids]);
 
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -57,11 +67,18 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '', onClose
 
     term.writeln('\x1b[34m[FlashRun] \x1b[0m waiting for output...');
 
-    // 4. 监听事件: 捕获 Promise 防止 StrictMode 的多次渲染导致卸载时抛错或遗漏
-    const unlistenPromise = listen<string>('terminal-out', (event) => {
-      if (termRef.current) {
-        termRef.current.write(event.payload);
+    // 4. 用户输入时，将按键数据发送到所有正在运行中的进程 stdin
+    term.onData((data) => {
+      const pids = runningPidsRef.current;
+      if (pids.length === 0) return;
+      for (const pid of pids) {
+        invoke('send_input', { pid, data }).catch((err) => console.warn('send_input error:', err));
       }
+    });
+
+    // 5. 监听 terminal-out 事件输出到屏幕
+    const unlistenPromise = listen<string>('terminal-out', (event) => {
+      if (termRef.current) termRef.current.write(event.payload);
     });
 
     // 5. 监听窗口大小改变（window resize + 父容器 resize 都要感知）
