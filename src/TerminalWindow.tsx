@@ -63,16 +63,24 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
       }
     });
 
-    // 5. 监听窗口大小改变
+    // 5. 监听窗口大小改变（window resize + 父容器 resize 都要感知）
     const handleResize = () => {
-      if (fitAddonRef.current) {
-        fitAddonRef.current.fit();
-      }
+      if (fitAddonRef.current) fitAddonRef.current.fit();
     };
     window.addEventListener('resize', handleResize);
 
+    // 6. 用 ResizeObserver 监听终端容器自身的尺寸变化（拖拽调整高度时触发 refit）
+    const observer = new ResizeObserver(() => {
+      if (fitAddonRef.current) {
+        // 用 rAF 延迟一帧，确保 DOM 已完成布局再 fit
+        requestAnimationFrame(() => fitAddonRef.current?.fit());
+      }
+    });
+    if (terminalRef.current) observer.observe(terminalRef.current);
+
     return () => {
       window.removeEventListener('resize', handleResize);
+      observer.disconnect();
       unlistenPromise.then(unlistenFn => unlistenFn());
       term.dispose();
     };

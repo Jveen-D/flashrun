@@ -95,8 +95,10 @@ export const TopBar: React.FC = () => {
                 { label: "Codebuddy", value: "codebuddy" },
                 { label: "Antigravity", value: "antigravity" }
               ]}
-              buttonClassName="flex items-center justify-center px-2 py-1.5 cursor-pointer h-full rounded-r-lg text-inherit hover:text-inherit focus:outline-none"
+              buttonClassName="flex items-center justify-center px-2 py-1.5 cursor-pointer h-full rounded-r-lg focus:outline-none"
               dropdownClassName="right-0 top-full mt-2 w-40"
+              hideChevron={false}
+              hideLabelDisplay
             />
           </div>
         </div>

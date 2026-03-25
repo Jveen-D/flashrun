@@ -18,6 +18,8 @@ interface CustomSelectProps {
   dropdownClassName?: string;
   // 是否隐藏右侧默认的箭头
   hideChevron?: boolean;
+  // 是否隐藏当前选中项目的文字标签（只显示箭头）
+  hideLabelDisplay?: boolean;
 }
 
 export const CustomSelect: React.FC<CustomSelectProps> = ({ 
@@ -27,7 +29,8 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   className = "",
   buttonClassName = "flex items-center justify-between w-full px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors",
   dropdownClassName = "left-0",
-  hideChevron = false
+  hideChevron = false,
+  hideLabelDisplay = false
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -50,7 +53,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
         onClick={() => setIsOpen(!isOpen)}
         className={buttonClassName}
       >
-        <span className="truncate">{selectedOption.label}</span>
+        {!hideLabelDisplay && <span className="truncate">{selectedOption.label}</span>}
         {!hideChevron && (
           <ChevronDown size={14} className={`shrink-0 ml-2 transition-transform duration-200 text-slate-400 ${isOpen ? 'rotate-180 text-blue-400' : ''}`} />
         )}
