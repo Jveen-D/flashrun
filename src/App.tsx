@@ -39,20 +39,24 @@ function App() {
       root.classList.toggle('dark', globalSettings.theme === 'dark');
     }
   }, [globalSettings.theme]);
+  const [isDraggingState, setIsDraggingState] = useState(false);
 
   const handleDragStart = (e: React.MouseEvent) => {
     e.preventDefault();
     isDragging.current = true;
+    setIsDraggingState(true);
     dragStartY.current = e.clientY;
     dragStartHeight.current = terminalHeight;
     const handleMouseMove = (ev: MouseEvent) => {
       if (!isDragging.current) return;
-      // 终端高度 = 屏幕底部到鼠标位置的距离（鼠标越高→距离越大→终端越高）
-      const newHeight = window.innerHeight - ev.clientY;
-      setTerminalHeight(Math.min(700, Math.max(180, newHeight)));
+      // 终端在底部，高度 = 屏幕总高度 - 鼠标 Y 坐标
+      // 鼠标向上移动 (clientY 减小) -> 高度增加
+      const h = window.innerHeight - ev.clientY;
+      setTerminalHeight(Math.max(150, Math.min(800, h)));
     };
     const handleMouseUp = () => {
       isDragging.current = false;
+      setIsDraggingState(false);
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
@@ -71,14 +75,15 @@ function App() {
           <>
             <TopBar isTerminalOpen={isTerminalOpen} onTerminalToggle={toggleTerminal} />
             
-            <div className="flex-1 overflow-y-auto w-full no-scrollbar" style={{ paddingBottom: terminalVisible ? terminalHeight : 0 }}>
+            {/* 这里移除动态 paddingBottom，因为终端在 flex 布局中已经占位了 */}
+            <div className="flex-1 overflow-y-auto w-full no-scrollbar">
               <ActionGrid />
             </div>
 
             {/* 底部终端面板 */}
             {terminalVisible && (
               <div
-                className="relative shrink-0 transition-all duration-300"
+                className={`relative shrink-0 ${isDraggingState ? '' : 'transition-all duration-300'}`}
                 style={{ height: terminalHeight }}
               >
                 {/* 拖拽调整高度手柄 */}
