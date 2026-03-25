@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
+import { load, Store } from '@tauri-apps/plugin-store';
 
 export interface Command {
   id: string;
@@ -24,117 +25,160 @@ export interface GlobalSettings {
   language: 'zh' | 'en';
 }
 
+const DEFAULT_SETTINGS: GlobalSettings = {
+  defaultEditor: 'code',
+  theme: 'system',
+  language: 'zh',
+};
+
+// 磁盘持久化单例
+let diskStore: Store | null = null;
+
+async function getDiskStore(): Promise<Store> {
+  if (!diskStore) {
+    diskStore = await load('flashrun-config.json', { autoSave: true, defaults: {} });
+  }
+  return diskStore;
+}
+
+// 把项目列表写入磁盘（只序列化纯数据，忽略运行态）
+async function persistProjects(projects: Project[]) {
+  const store = await getDiskStore();
+  // 写入时将所有命令的运行状态重置为 idle（重启后重新初始化）
+  const toSave = projects.map(p => ({
+    ...p,
+    commands: p.commands.map(c => ({ ...c, status: 'idle', pid: null })),
+  }));
+  await store.set('projects', toSave);
+}
+
+async function persistSettings(settings: GlobalSettings) {
+  const store = await getDiskStore();
+  await store.set('settings', settings);
+}
+
 interface StoreState {
   projects: Project[];
   activeProjectId: string | null;
   globalSettings: GlobalSettings;
-  
+  hydrated: boolean; // 是否已从磁盘加载完毕
+
+  hydrate: () => Promise<void>;
   addProject: (path: string, manager: string, scripts: Record<string, string>) => void;
   updateProjectManager: (projectId: string, newManager: string) => void;
   setActiveProject: (id: string) => void;
   removeProject: (id: string) => void;
-  
+
   addCommand: (projectId: string, label: string, cmd: string) => void;
   updateCommand: (projectId: string, commandId: string, updates: Partial<Command>) => void;
   removeCommand: (projectId: string, commandId: string) => void;
-  
+
   updateGlobalSettings: (settings: Partial<GlobalSettings>) => void;
 }
 
 export const useStore = create<StoreState>((set) => ({
   projects: [],
   activeProjectId: null,
-  globalSettings: {
-    defaultEditor: 'code',
-    theme: 'system',
-    language: 'zh',
+  globalSettings: DEFAULT_SETTINGS,
+  hydrated: false,
+
+  // 从磁盘读取持久化数据，在 App 初始化时调用一次
+  hydrate: async () => {
+    const store = await getDiskStore();
+    const savedProjects = await store.get<Project[]>('projects');
+    const savedSettings = await store.get<GlobalSettings>('settings');
+    set({
+      projects: savedProjects ?? [],
+      activeProjectId: savedProjects?.[0]?.id ?? null,
+      globalSettings: savedSettings ?? DEFAULT_SETTINGS,
+      hydrated: true,
+    });
   },
 
   addProject: (path, manager, scripts) => set((state) => {
-    // 提取路径末尾作为项目名称
     const name = path.split(/[/\\]/).filter(Boolean).pop() || 'Unnamed Project';
-    // 检查是否已经存在该路径的项目
-    if (state.projects.some(p => p.path === path)) {
-      return state;
-    }
+    if (state.projects.some(p => p.path === path)) return state;
 
-    const initCommands = Object.entries(scripts).map(([key, _]) => ({
+    const initCommands = Object.entries(scripts).map(([key]) => ({
       id: nanoid(),
       label: key,
       cmd: `${manager} run ${key}`,
       status: 'idle' as const,
-      pid: null
+      pid: null,
     }));
 
-    const newProject: Project = {
-      id: nanoid(),
-      name,
-      path,
-      manager,
-      commands: initCommands
-    };
-    return {
-      projects: [...state.projects, newProject],
-      activeProjectId: state.activeProjectId || newProject.id
-    };
+    const newProject: Project = { id: nanoid(), name, path, manager, commands: initCommands };
+    const projects = [...state.projects, newProject];
+    persistProjects(projects);
+    return { projects, activeProjectId: state.activeProjectId || newProject.id };
   }),
 
-  updateProjectManager: (projectId, newManager) => set((state) => ({
-    projects: state.projects.map(p => {
+  updateProjectManager: (projectId, newManager) => set((state) => {
+    const projects = state.projects.map(p => {
       if (p.id !== projectId) return p;
       const oldManager = p.manager;
       return {
         ...p,
         manager: newManager,
         commands: p.commands.map(cmd => {
-          // 只替换开头的包管理器名称，比如将 'npm run dev' 换成 'pnpm run dev'
           const regex = new RegExp(`^${oldManager}\\b`);
-          return {
-            ...cmd,
-            cmd: cmd.cmd.replace(regex, newManager)
-          };
-        })
+          return { ...cmd, cmd: cmd.cmd.replace(regex, newManager) };
+        }),
       };
-    })
-  })),
+    });
+    persistProjects(projects);
+    return { projects };
+  }),
 
   setActiveProject: (id) => set({ activeProjectId: id }),
 
-  removeProject: (id) => set((state) => ({
-    projects: state.projects.filter(p => p.id !== id),
-    activeProjectId: state.activeProjectId === id 
-      ? (state.projects.find(p => p.id !== id)?.id || null) 
-      : state.activeProjectId
-  })),
+  removeProject: (id) => set((state) => {
+    const projects = state.projects.filter(p => p.id !== id);
+    persistProjects(projects);
+    return {
+      projects,
+      activeProjectId: state.activeProjectId === id
+        ? (projects[0]?.id || null)
+        : state.activeProjectId,
+    };
+  }),
 
-  addCommand: (projectId, label, cmd) => set((state) => ({
-    projects: state.projects.map(p => 
-      p.id === projectId 
-        ? { ...p, commands: [...p.commands, { id: nanoid(), label, cmd, status: 'idle', pid: null }] } 
+  addCommand: (projectId, label, cmd) => set((state) => {
+    const projects = state.projects.map(p =>
+      p.id === projectId
+        ? { ...p, commands: [...p.commands, { id: nanoid(), label, cmd, status: 'idle' as const, pid: null }] }
         : p
-    )
-  })),
+    );
+    persistProjects(projects);
+    return { projects };
+  }),
 
-  updateCommand: (projectId, commandId, updates) => set((state) => ({
-    projects: state.projects.map(p => 
-      p.id === projectId 
-        ? {
-            ...p,
-            commands: p.commands.map(c => c.id === commandId ? { ...c, ...updates } : c)
-          }
+  updateCommand: (projectId, commandId, updates) => set((state) => {
+    const projects = state.projects.map(p =>
+      p.id === projectId
+        ? { ...p, commands: p.commands.map(c => c.id === commandId ? { ...c, ...updates } : c) }
         : p
-    )
-  })),
+    );
+    // 运行状态变化不需要落盘（重启后统一 reset）
+    if (!('status' in updates) && !('pid' in updates)) {
+      persistProjects(projects);
+    }
+    return { projects };
+  }),
 
-  removeCommand: (projectId, commandId) => set((state) => ({
-    projects: state.projects.map(p => 
-      p.id === projectId 
-        ? { ...p, commands: p.commands.filter(c => c.id !== commandId) } 
+  removeCommand: (projectId, commandId) => set((state) => {
+    const projects = state.projects.map(p =>
+      p.id === projectId
+        ? { ...p, commands: p.commands.filter(c => c.id !== commandId) }
         : p
-    )
-  })),
+    );
+    persistProjects(projects);
+    return { projects };
+  }),
 
-  updateGlobalSettings: (settings) => set((state) => ({
-    globalSettings: { ...state.globalSettings, ...settings }
-  }))
+  updateGlobalSettings: (settings) => set((state) => {
+    const globalSettings = { ...state.globalSettings, ...settings };
+    persistSettings(globalSettings);
+    return { globalSettings };
+  }),
 }));

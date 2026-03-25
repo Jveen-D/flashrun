@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { ActionGrid } from "./components/ActionGrid";
@@ -7,16 +7,21 @@ import TerminalWindow from "./TerminalWindow";
 import { useStore } from "./store";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useEffect } from "react";
 import "./App.css";
 
+
 function App() {
-  const { projects, activeProjectId, globalSettings, updateGlobalSettings } = useStore();
+  const { projects, activeProjectId, globalSettings, updateGlobalSettings, hydrate } = useStore();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const { t, i18n } = useTranslation();
   
   const activeProject = projects.find(p => p.id === activeProjectId);
   const isAnyRunning = activeProject?.commands.some(c => c.status === 'running');
+
+  // 应用启动时从磁盘恢复数据
+  useEffect(() => {
+    hydrate();
+  }, []);
 
   useEffect(() => {
     i18n.changeLanguage(globalSettings.language || "zh");
