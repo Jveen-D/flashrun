@@ -47,8 +47,9 @@ function App() {
     dragStartHeight.current = terminalHeight;
     const handleMouseMove = (ev: MouseEvent) => {
       if (!isDragging.current) return;
-      const delta = ev.clientY - dragStartY.current;
-      setTerminalHeight(Math.min(700, Math.max(180, dragStartHeight.current - delta)));
+      // 终端高度 = 屏幕底部到鼠标位置的距离（鼠标越高→距离越大→终端越高）
+      const newHeight = window.innerHeight - ev.clientY;
+      setTerminalHeight(Math.min(700, Math.max(180, newHeight)));
     };
     const handleMouseUp = () => {
       isDragging.current = false;
