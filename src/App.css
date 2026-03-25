@@ -19,3 +19,19 @@ html, body, #root {
   padding: 0;
   overflow: hidden;
 }
+
+/* xterm.js 内置滚动条样式覆盖 */
+.xterm-viewport::-webkit-scrollbar {
+  width: 5px;
+}
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.35);
+  border-radius: 10px;
+  transition: background 0.2s;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.65);
+}
