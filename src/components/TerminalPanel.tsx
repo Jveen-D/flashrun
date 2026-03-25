@@ -114,6 +114,8 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ className = '', onClose, 
             <TerminalWindow
               key={`${activeProjectId}-${tab.id}`}
               className="w-full h-full"
+              sessionId={tab.id}
+              workingDir={workingDir}
             />
           </div>
         ))}
