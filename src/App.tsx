@@ -11,10 +11,9 @@ import "./App.css";
 
 
 function App() {
-  const { projects, activeProjectId, globalSettings, updateGlobalSettings, hydrate } = useStore();
+  const { projects, activeProjectId, globalSettings, updateGlobalSettings, hydrate, isTerminalOpen, setTerminalOpen, toggleTerminal } = useStore();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(340);
-  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const isDragging = useRef(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
@@ -69,7 +68,7 @@ function App() {
       <div className="flex-1 flex flex-col relative w-full h-full overflow-hidden">
         {activeProject ? (
           <>
-            <TopBar isTerminalOpen={isTerminalOpen} onTerminalToggle={() => setIsTerminalOpen(v => !v)} />
+            <TopBar isTerminalOpen={isTerminalOpen} onTerminalToggle={toggleTerminal} />
             
             <div className="flex-1 overflow-y-auto w-full no-scrollbar" style={{ paddingBottom: terminalVisible ? terminalHeight : 0 }}>
               <ActionGrid />
@@ -93,7 +92,7 @@ function App() {
                 <TerminalPanel
                   key={activeProjectId}
                   className="h-full w-full"
-                  onClose={() => setIsTerminalOpen(false)}
+                  onClose={() => setTerminalOpen(false)}
                   activeProjectId={activeProjectId}
                 />
               </div>

@@ -57,11 +57,13 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
 
     term.open(terminalRef.current);
     fitAddon.fit();
+    // 挂载后立即 focus，让用户无需先点击就能输入
+    setTimeout(() => term.focus(), 50);
 
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    term.writeln('\x1b[34m[FlashRun]\x1b[0m Terminal ready. Start a command to see output.');
+    term.writeln('\x1b[34m[FlashRun]\x1b[0m Terminal ready.');
 
     // 用户键盘输入处理：
     // 1. 如果有运行中的进程，将输入发送到进程 stdin
@@ -103,7 +105,10 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({ className = '' }) => {
   }, []);
 
   return (
-    <div className={`flex flex-col w-full h-full overflow-hidden ${className}`}>
+    <div
+      className={`flex flex-col w-full h-full overflow-hidden ${className}`}
+      onClick={() => termRef.current?.focus()}
+    >
       <div className="flex-1 p-2 overflow-hidden">
         <div ref={terminalRef} className="w-full h-full" />
       </div>

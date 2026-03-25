@@ -74,6 +74,11 @@ interface StoreState {
   removeCommand: (projectId: string, commandId: string) => void;
 
   updateGlobalSettings: (settings: Partial<GlobalSettings>) => void;
+
+  // UI 状态 - 终端面板可见性
+  isTerminalOpen: boolean;
+  setTerminalOpen: (open: boolean) => void;
+  toggleTerminal: () => void;
 }
 
 export const useStore = create<StoreState>((set) => ({
@@ -81,6 +86,10 @@ export const useStore = create<StoreState>((set) => ({
   activeProjectId: null,
   globalSettings: DEFAULT_SETTINGS,
   hydrated: false,
+  isTerminalOpen: false,
+
+  setTerminalOpen: (open) => set({ isTerminalOpen: open }),
+  toggleTerminal: () => set((state) => ({ isTerminalOpen: !state.isTerminalOpen })),
 
   // 从磁盘读取持久化数据，在 App 初始化时调用一次
   hydrate: async () => {

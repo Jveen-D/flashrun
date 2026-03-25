@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 
 export const ActionGrid: React.FC = () => {
-  const { projects, activeProjectId, updateCommand, addCommand } = useStore();
+  const { projects, activeProjectId, updateCommand, addCommand, setTerminalOpen } = useStore();
   const { t } = useTranslation();
   const activeProject = projects.find(p => p.id === activeProjectId);
 
@@ -95,16 +95,9 @@ export const ActionGrid: React.FC = () => {
           {t('Console Commands')}
         </div>
         <button 
-          onClick={async () => {
-            try {
-              await invoke("open_terminal", { path: activeProject.path });
-            } catch (e) {
-              console.error("Failed to open terminal:", e);
-              alert(t("打开终端失败"));
-            }
-          }}
+          onClick={() => setTerminalOpen(true)}
           className="text-sm flex items-center bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors shadow-sm cursor-pointer"
-          title={t("在当前目录打开系统终端")}
+          title={t("打开终端面板")}
         >
           <TerminalSquare size={16} className="mr-2" />
           <span>{t('终端')}</span>
