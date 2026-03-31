@@ -123,7 +123,11 @@ Rust 暴露给前端的主要命令：
 - `send_input`
 - `create_shell_session`
 - `kill_command`
-- `open_in_editor`
+- `open_in_editor`（支持 `VS Code`、`Cursor`、`Zed`、`CodeBuddy`、`Antigravity`；Windows 下会依次尝试编辑器自己的 CLI、`.cmd/.exe` 名称与默认安装路径，不会跨编辑器回退）
+
+
+
+
 
 ## 9. 关键事件通道
 

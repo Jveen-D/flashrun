@@ -168,9 +168,10 @@ flashrun/
 - `pid`
 
 ### 全局设置
-- 默认编辑器
+- 默认编辑器：支持 `VS Code`、`Cursor`、`Zed`、`CodeBuddy`、`Antigravity`
 - 主题：`dark | light | system`
 - 语言：`zh | en`
+
 
 ### UI 状态
 - 终端是否展开
@@ -316,7 +317,12 @@ flashrun/
 ### 8.6 `open_in_editor`
 作用：
 - 使用命令行方式打开外部编辑器
-- 例如 `code path`、`cursor path`
+- Windows 下会按候选列表依次尝试该编辑器自己的 CLI、`.cmd/.exe` 名称以及常见默认安装路径；不会跨编辑器回退，失败时会返回已尝试项与错误明细
+
+
+- 例如 `code path`、`cursor path`、`zed path`
+
+
 
 ### 8.7 配置读写：`load_app_config` / `save_app_config`
 作用：

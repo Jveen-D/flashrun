@@ -140,7 +140,8 @@ function App() {
                   options={[
                     { label: "Visual Studio Code (code)", value: "code" },
                     { label: "Cursor (cursor)", value: "cursor" },
-                    { label: "Codebuddy", value: "codebuddy" },
+                    { label: "Zed (zed)", value: "zed" },
+                    { label: "CodeBuddy", value: "codebuddy" },
                     { label: "Antigravity Internal", value: "antigravity" },
                   ]}
                 />

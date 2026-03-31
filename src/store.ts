@@ -16,11 +16,11 @@ export interface Project {
   path: string;
   manager: string;
   commands: Command[];
-  defaultEditor?: 'code' | 'cursor' | 'codebuddy' | 'antigravity';
+  defaultEditor?: 'code' | 'cursor' | 'zed' | 'codebuddy' | 'antigravity';
 }
 
 export interface GlobalSettings {
-  defaultEditor: 'code' | 'cursor' | 'codebuddy' | 'antigravity';
+  defaultEditor: 'code' | 'cursor' | 'zed' | 'codebuddy' | 'antigravity';
   theme: 'dark' | 'light' | 'system';
   language: 'zh' | 'en';
 }

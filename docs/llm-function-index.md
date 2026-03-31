@@ -20,7 +20,11 @@
 | `parse_project_info` | `src-tauri/src/lib.rs` | 94 | 解析项目与 scripts |
 | `run_command` | `src-tauri/src/lib.rs` | 167 | 启动脚本子进程 |
 | `create_shell_session` | `src-tauri/src/lib.rs` | 250 | 创建终端 shell |
-| `run` | `src-tauri/src/lib.rs` | 378 | 注册所有 Tauri 命令 |
+| `run` | `src-tauri/src/lib.rs` | 496 | 注册所有 Tauri 命令 |
+
+
+
+
 
 ---
 
@@ -153,8 +157,12 @@
 | `send_input` | 232 | 向指定进程写入 `stdin` | `TerminalWindow.tsx` |
 | `create_shell_session` | 250 | 创建 shell 并发出 `shell-out-{sessionId}` | `TerminalWindow.tsx` |
 | `kill_command` | 327 | 杀死指定 pid | `ActionGrid.tsx`、`TerminalWindow.tsx` |
-| `open_in_editor` | 358 | 打开外部编辑器 | `TopBar.tsx` |
-| `run` | 378 | 注册插件与所有命令 | Tauri 启动入口 |
+| `open_in_editor` | 432 | 打开外部编辑器 | `TopBar.tsx` |
+| `run` | 496 | 注册插件与所有命令 | Tauri 启动入口 |
+
+
+
+
 
 ### 5.3 需要特别理解的后端细节
 
@@ -165,7 +173,11 @@
 | shell 输出事件 | `create_shell_session` | 发到 `shell-out-{sessionId}` |
 | 输入回传 | `send_input` | 基于 `stdinmap` 按 pid 写入 |
 | 进程终止 | `kill_command` | Windows 用 `taskkill /F /T /PID` |
-| 编辑器打开 | `open_in_editor` | Windows 下通过 `cmd /c editor path` |
+| 编辑器打开 | `open_in_editor` | 支持 `VS Code`、`Cursor`、`Zed`、`CodeBuddy`、`Antigravity`；Windows 下会按候选列表依次尝试编辑器自己的 CLI、`.cmd/.exe` 名称与默认安装路径；失败时返回尝试明细 |
+
+
+
+
 
 ---
 

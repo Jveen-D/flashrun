@@ -354,24 +354,142 @@ fn kill_command(
     Ok(())
 }
 
+fn editor_command_candidates(editor_key: &str) -> Vec<&str> {
+    match editor_key {
+        "codebuddy" => vec!["codebuddy", "codebuddy.exe"],
+        "antigravity" => vec!["antigravity", "antigravity.cmd", "antigravity.exe"],
+        "code" => vec!["code", "code.cmd", "code.exe"],
+        "cursor" => vec!["cursor", "cursor.cmd", "cursor.exe"],
+        "zed" => vec!["zed", "zed.cmd", "zed.exe"],
+        other => vec![other],
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_editor_launch_candidates(editor_key: &str) -> Vec<String> {
+    let mut candidates = editor_command_candidates(editor_key)
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    match editor_key {
+        "codebuddy" => {
+            candidates.push(String::from(r"C:\应用\CodeBuddy\CodeBuddy.exe"));
+            candidates.push(String::from(r"C:\应用\CodeBuddy CN\CodeBuddy CN.exe"));
+
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let base = PathBuf::from(local_app_data).join("Programs");
+                candidates.push(base.join("CodeBuddy").join("CodeBuddy.exe").to_string_lossy().into_owned());
+                candidates.push(base.join("CodeBuddy CN").join("CodeBuddy CN.exe").to_string_lossy().into_owned());
+            }
+        }
+        "antigravity" => {
+            candidates.push(String::from(r"C:\应用\Antigravity\bin\antigravity.cmd"));
+            candidates.push(String::from(r"C:\应用\Antigravity\Antigravity.exe"));
+
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let base = PathBuf::from(local_app_data).join("Programs");
+                candidates.push(base.join("Antigravity").join("bin").join("antigravity.cmd").to_string_lossy().into_owned());
+                candidates.push(base.join("Antigravity").join("Antigravity.exe").to_string_lossy().into_owned());
+            }
+        }
+        "code" => {
+            candidates.push(String::from(r"C:\Program Files\Microsoft VS Code\Code.exe"));
+            candidates.push(String::from(r"C:\Program Files (x86)\Microsoft VS Code\Code.exe"));
+
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let base = PathBuf::from(&local_app_data).join("Programs");
+                candidates.push(base.join("Microsoft VS Code").join("Code.exe").to_string_lossy().into_owned());
+                candidates.push(PathBuf::from(&local_app_data).join("Microsoft VS Code").join("Code.exe").to_string_lossy().into_owned());
+            }
+        }
+        "cursor" => {
+            candidates.push(String::from(r"C:\Program Files\Cursor\Cursor.exe"));
+
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let base = PathBuf::from(&local_app_data).join("Programs");
+                candidates.push(base.join("Cursor").join("Cursor.exe").to_string_lossy().into_owned());
+                candidates.push(PathBuf::from(&local_app_data).join("Cursor").join("Cursor.exe").to_string_lossy().into_owned());
+            }
+        }
+        "zed" => {
+            candidates.push(String::from(r"C:\Program Files\Zed\Zed.exe"));
+            candidates.push(String::from(r"C:\Program Files (x86)\Zed\Zed.exe"));
+
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let base = PathBuf::from(&local_app_data).join("Programs");
+                candidates.push(base.join("Zed").join("Zed.exe").to_string_lossy().into_owned());
+                candidates.push(PathBuf::from(&local_app_data).join("Zed").join("Zed.exe").to_string_lossy().into_owned());
+            }
+        }
+        _ => {}
+    }
+
+    candidates
+}
+
 #[tauri::command]
 fn open_in_editor(path: String, editor_key: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    let mut command = Command::new("cmd");
-    #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-        command.args(["/c", &editor_key, &path]);
+
+        let candidates = windows_editor_launch_candidates(&editor_key);
+        let mut launch_errors = Vec::new();
+
+        for candidate in &candidates {
+            let result = if candidate.ends_with(".cmd") || candidate.ends_with(".bat") {
+                let mut command = Command::new("cmd");
+                command.creation_flags(0x08000000);
+                command.args(["/c", candidate, &path]);
+                command.spawn()
+            } else {
+                let mut command = Command::new(candidate);
+                command.creation_flags(0x08000000);
+                command.arg(&path);
+                command.spawn()
+            };
+
+            match result {
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => launch_errors.push(format!("{} -> {}", candidate, error)),
+            }
+        }
+
+        if launch_errors.is_empty() {
+            return Err(format!(
+                "无法找到编辑器 `{}`。已尝试：{}",
+                editor_key,
+                candidates.join("、")
+            ));
+        }
+
+        return Err(format!(
+            "无法唤起编辑器 `{}`。已尝试：{}。错误：{}",
+            editor_key,
+            candidates.join("、"),
+            launch_errors.join(" | ")
+        ));
     }
 
     #[cfg(not(target_os = "windows"))]
-    let mut command = Command::new(&editor_key);
-    #[cfg(not(target_os = "windows"))]
-    command.arg(&path);
+    {
+        let candidates = editor_command_candidates(&editor_key);
 
-    command.spawn().map_err(|e| e.to_string())?;
-    Ok(())
+        for candidate in &candidates {
+            match Command::new(candidate).arg(&path).spawn() {
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+
+        return Err(format!(
+            "无法找到编辑器命令 `{}`。请确保已将对应 CLI 加入系统环境变量 PATH 中。",
+            candidates.join("`、`")
+        ));
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

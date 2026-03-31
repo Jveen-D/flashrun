@@ -20,13 +20,15 @@ export const TopBar: React.FC<TopBarProps> = ({ isTerminalOpen, onTerminalToggle
   const handleOpenEditor = async () => {
     if (!activeProject) return;
     try {
-      await invoke("open_in_editor", { 
-        path: activeProject.path, 
-        editorKey: globalSettings.defaultEditor 
+      await invoke("open_in_editor", {
+        path: activeProject.path,
+        editorKey: globalSettings.defaultEditor
       });
     } catch (e) {
       console.error("Failed to open editor:", e);
-      alert(t("无法唤起编辑器 {{editor}}。请确保已将其加入到系统环境变量 PATH 中。", { editor: globalSettings.defaultEditor }));
+      const editorHint = editorLabelMap[globalSettings.defaultEditor] || globalSettings.defaultEditor;
+      const errorMessage = typeof e === 'string' ? e : String(e);
+      alert(t("无法唤起编辑器 {{editor}}。\n\n{{detail}}", { editor: editorHint, detail: errorMessage }));
     }
   };
 
@@ -37,7 +39,8 @@ export const TopBar: React.FC<TopBarProps> = ({ isTerminalOpen, onTerminalToggle
   const editorLabelMap: Record<string, string> = {
     'code': 'VS Code',
     'cursor': 'Cursor',
-    'codebuddy': 'Codebuddy',
+    'zed': 'Zed',
+    'codebuddy': 'CodeBuddy',
     'antigravity': 'Antigravity'
   };
 
@@ -111,7 +114,8 @@ export const TopBar: React.FC<TopBarProps> = ({ isTerminalOpen, onTerminalToggle
               options={[
                 { label: "VS Code", value: "code" },
                 { label: "Cursor", value: "cursor" },
-                { label: "Codebuddy", value: "codebuddy" },
+                { label: "Zed", value: "zed" },
+                { label: "CodeBuddy", value: "codebuddy" },
                 { label: "Antigravity", value: "antigravity" }
               ]}
               buttonClassName="flex items-center justify-center px-3 cursor-pointer rounded-r-lg focus:outline-none h-full"
