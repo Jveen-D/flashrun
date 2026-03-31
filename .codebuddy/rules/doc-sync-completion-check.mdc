@@ -1,0 +1,43 @@
+---
+description: 
+alwaysApply: true
+enabled: true
+updatedAt: 2026-03-31T02:18:46.630Z
+provider: 
+---
+
+# 文档同步收尾检查规则
+
+## 目标
+任何代码任务在结束前，都必须做一次面向 LLM 文档的收尾检查，确认项目理解文档没有滞后于实现。
+
+## 执行要求
+1. 任务接近完成时，必须检查：
+   - `docs/INDEX.md`
+   - `docs/llm-project-context.md`
+   - `docs/llm-project-context-short.md`
+   - `docs/llm-function-index.md`
+   - `docs/llm-change-guide.md`
+   - `docs/llm-doc-sync-checklist.md`
+2. 只要本次任务影响了项目理解、关键函数入口、数据结构、配置方式、事件通道或目录职责，就必须同步修改对应文档。
+3. 如果关键函数位置变化，必须刷新 `docs/llm-function-index.md` 中的行号。
+4. **只要 `docs/llm-function-index.md` 中任何已记录函数、组件或 Tauri 命令的位置发生变化，都必须刷新对应行号，禁止保留失准条目。**
+5. 如果新增了文档或规则，必须补齐所有相关导航，必要时更新 `docs/INDEX.md`。
+6. 结束任务前，必须按 `docs/llm-doc-sync-checklist.md` 的检查表完成一次确认。
+
+## 最低完成标准
+以下条件同时满足，任务才算真正完成：
+- 代码已经达到目标
+- 文档已经同步到当前实现
+- 索引行号仍可定位
+- 所有受影响的索引行号都已刷新
+- 导航链接完整
+- 收尾检查已完成
+
+## 豁免边界
+仅当改动明确属于以下情况时，可不更新文档：
+- 纯样式微调
+- 不影响逻辑的文案修正
+- 不影响理解路径的局部细节调整
+
+如果不确定，默认执行文档同步检查。

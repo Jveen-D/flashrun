@@ -1,0 +1,61 @@
+---
+description: 
+alwaysApply: true
+enabled: true
+updatedAt: 2026-03-31T02:18:46.568Z
+provider: 
+---
+
+# LLM 文档同步维护规则
+
+## 目标
+任何会影响项目理解、功能行为、核心入口、数据结构、配置方式、目录职责或文档体系的改动，都必须同步更新以下文档，防止文档准确性滞后：
+
+- `docs/INDEX.md`
+- `docs/llm-project-context.md`
+- `docs/llm-project-context-short.md`
+- `docs/llm-function-index.md`
+- `docs/llm-change-guide.md`
+- `docs/llm-doc-sync-checklist.md`
+
+## 强制要求
+1. **每次代码修改后，都必须检查上述文档是否需要同步更新。**
+2. 如果改动影响了功能说明、架构、数据流、状态模型、Rust/Tauri 命令、事件通道、配置存储、目录职责，必须更新：
+   - `docs/llm-project-context.md`
+   - `docs/llm-project-context-short.md`
+3. 如果改动影响了关键函数、关键组件、Tauri 命令、文件职责、函数位置或行号，必须更新：
+   - `docs/llm-function-index.md`
+4. **只要 `docs/llm-function-index.md` 中已记录的函数、组件或 Tauri 命令位置发生变化，就必须立即刷新对应行号，禁止保留旧行号。**
+5. 如果变更了文档维护流程、新增了新的 LLM 理解文档，或修改了任务收尾检查方式，必须更新：
+   - `docs/llm-change-guide.md`
+   - `docs/llm-doc-sync-checklist.md`
+   - 必要时更新 `docs/INDEX.md`
+6. 如果新增了相关文档，必须补齐这些文档之间的导航链接。
+7. 不允许只改代码、不改已经失准的文档。
+8. 在结束任务前，必须按照 `docs/llm-doc-sync-checklist.md` 完成一次文档同步检查。
+
+## 高频场景要求
+- 改项目接入逻辑：同步更新 `context`、`short`，必要时更新 `function-index`
+- 改命令运行/停止/重启：同步更新 `context`、`short`、`function-index`
+- 改终端交互或 shell 会话：同步更新 `context`、`short`、`function-index`
+- 改 Zustand store、持久化结构或配置格式：同步更新 `context`、`short`、`function-index`
+- 改外部编辑器打开、系统能力或 Tauri/Rust 命令：同步更新 `context`、`short`、`function-index`
+- 改规则本身、导航页或收尾模板：同步更新 `llm-change-guide.md`、`llm-doc-sync-checklist.md`，必要时更新 `docs/INDEX.md`
+
+## 豁免边界
+以下情况通常可以不更新这些文档，但必须先确认不会影响项目理解：
+- 纯样式微调
+- 不影响逻辑的文案调整
+- 不影响入口、行为、数据流的局部重构
+
+如果不确定，默认更新文档，而不是跳过。
+
+## 完成任务前自检
+在结束任何一次代码任务前，必须自检：
+- 文档是否仍与当前代码一致
+- 函数索引中的函数描述和行号是否仍可用
+- 若索引中已记录函数、组件或 Tauri 命令位置变化，行号是否已全部刷新
+- 短版和完整版上下文是否仍准确
+- 文档同步检查模板是否仍适用
+- 是否有新增文档需要加入导航
+- 是否已经按 `docs/llm-doc-sync-checklist.md` 完成检查
