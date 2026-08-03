@@ -1,19 +1,49 @@
-import React, { useCallback } from 'react';
-import { Plus, X, Terminal as TerminalIcon } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo } from 'react';
+import { Plus, X } from 'lucide-react';
+
 import TerminalWindow from '../TerminalWindow';
 import { useStore } from '../store';
+import { useTranslation } from 'react-i18next';
+import { requestTerminalFit } from '../utils/terminal';
+
 
 interface TerminalPanelProps {
   className?: string;
   onClose?: () => void;
   activeProjectId?: string | null;
+  isOpen?: boolean;
 }
 
-const TerminalPanel: React.FC<TerminalPanelProps> = ({ className = '', onClose, activeProjectId }) => {
-  const { projects, projectTerminals, addTerminalTab, closeTerminalTab, setActiveTerminalTab } = useStore();
+const TerminalPanel: React.FC<TerminalPanelProps> = ({
+  className = '',
+  onClose,
+  activeProjectId,
+  isOpen = false,
+}) => {
+
+  const { projects, projectTerminals, addTerminalTab, closeTerminalTab, setActiveTerminalTab, activeCommandByProject } = useStore();
+  const { t } = useTranslation();
   const activeProject = projects.find((project) => project.id === activeProjectId);
   const workingDir = activeProject?.path ?? '.';
   const terminalState = activeProjectId ? projectTerminals[activeProjectId] : undefined;
+
+  const currentRunningCommand = useMemo(() => {
+    if (!activeProject || !activeProjectId) {
+      return null;
+    }
+
+    const activeCommandId = activeCommandByProject[activeProjectId];
+    return activeProject.commands.find((command) => command.id === activeCommandId && command.status === 'running')
+      ?? activeProject.commands.find((command) => command.status === 'running')
+      ?? null;
+  }, [activeCommandByProject, activeProject, activeProjectId]);
+
+  const terminalTitle = currentRunningCommand && activeProject
+    ? t('Terminal - {{project}} : {{command}}', {
+      project: activeProject.name,
+      command: currentRunningCommand.label,
+    })
+    : t('Terminal - Idle');
 
   const addTab = useCallback(() => {
     if (!activeProjectId) {
@@ -37,63 +67,65 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ className = '', onClose, 
     closeTerminalTab(activeProjectId, tabId);
   }, [activeProjectId, closeTerminalTab, onClose, terminalState?.tabs.length]);
 
+  useEffect(() => {
+    if (!isOpen || !terminalState?.activeTabId) {
+      return;
+    }
+
+    requestTerminalFit();
+    const timer = window.setTimeout(() => requestTerminalFit(), 60);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, terminalState?.activeTabId]);
+
   if (!terminalState) {
+
     return null;
   }
 
   return (
-    <div className={`flex flex-col w-full h-full bg-white/95 dark:bg-slate-950/80 backdrop-blur rounded-t-xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 border-b-0 transition-colors ${className}`}>
-      <div className="h-10 bg-slate-100/50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-800 flex items-center shrink-0 select-none">
-        <div className="flex items-center space-x-1.5 px-3 shrink-0">
-          <button
-            onClick={onClose}
-            className="w-3 h-3 rounded-full bg-red-400 dark:bg-red-500 hover:bg-red-500 dark:hover:bg-red-400 transition-colors flex items-center justify-center group"
-            title="收起终端"
-          >
-            <span className="text-red-900 opacity-0 group-hover:opacity-100 text-[8px] leading-none font-bold">×</span>
-          </button>
-          <div className="w-3 h-3 rounded-full bg-yellow-400 dark:bg-yellow-500" />
-          <div className="w-3 h-3 rounded-full bg-green-400 dark:bg-green-500" />
+    <div className={`flex h-full w-full flex-col overflow-hidden rounded-t-md border border-slate-200/70 border-b-0 bg-white transition-colors dark:border-slate-800/60 dark:bg-[#0B1120] ${className}`}>
+      <div className="flex h-7 shrink-0 select-none items-center gap-2 border-b border-slate-200/80 bg-slate-100/90 px-2 dark:border-slate-800/70 dark:bg-[#0E1628]">
+        <div className="min-w-0 flex-1 truncate text-[10px] font-medium uppercase tracking-[0.08em] text-slate-500 dark:text-slate-500">
+          {terminalTitle}
         </div>
 
-        <div className="flex-1 flex items-center overflow-x-auto no-scrollbar h-full">
-          {terminalState.tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTerminalTab(activeProjectId!, tab.id)}
-              className={`flex items-center gap-1.5 h-full px-3 text-xs font-medium shrink-0 border-r border-slate-200 dark:border-slate-800 transition-colors group relative ${
-                terminalState.activeTabId === tab.id
-                  ? 'bg-white/80 dark:bg-slate-900 text-slate-800 dark:text-slate-100'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/40 dark:hover:bg-slate-800/40'
-              }`}
-            >
-              <TerminalIcon size={11} className="shrink-0 opacity-70" />
-              <span>{tab.title}</span>
-              {terminalState.tabs.length > 1 && (
-                <span
-                  onClick={(event) => handleCloseTab(tab.id, event)}
-                  className={`ml-1 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-300 dark:hover:bg-slate-700 transition-all cursor-pointer ${terminalState.activeTabId === tab.id ? 'opacity-60' : ''}`}
-                >
-                  <X size={10} />
-                </span>
-              )}
-              {terminalState.activeTabId === tab.id && (
-                <span className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-500 rounded-t" />
-              )}
-            </button>
-          ))}
+        <div className="flex h-full max-w-[68%] shrink-0 items-center gap-0.5 overflow-x-auto no-scrollbar">
+          {terminalState.tabs.map((tab) => {
+            const isActive = terminalState.activeTabId === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTerminalTab(activeProjectId!, tab.id)}
+                className={`group relative flex h-[22px] shrink-0 items-center gap-1 rounded-sm border border-transparent px-2 text-[11px] font-medium transition-colors ${
+                  isActive
+                    ? 'border-slate-300/80 bg-white text-slate-700 dark:border-slate-700/70 dark:bg-[#111827] dark:text-slate-100'
+                    : 'text-slate-500 dark:text-slate-400 hover:bg-white/30 hover:text-slate-700 dark:hover:bg-slate-800/30 dark:hover:text-slate-200'
+                }`}
+              >
+                <span>{tab.title}</span>
+                {terminalState.tabs.length > 1 && isActive && (
+                  <span
+                    onClick={(event) => handleCloseTab(tab.id, event)}
+                    className="ml-0.5 cursor-pointer rounded p-0.5 opacity-50 transition-all hover:bg-slate-300 hover:opacity-100 dark:hover:bg-slate-700"
+                  >
+                    <X size={9} />
+                  </span>
+                )}
+              </button>
+            );
+          })}
 
           <button
             onClick={addTab}
-            className="flex items-center justify-center w-8 h-full text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 hover:bg-slate-200/60 dark:hover:bg-slate-800/60 transition-colors shrink-0"
-            title="新建终端"
+            className="ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-slate-400 transition-colors hover:bg-slate-200/60 hover:text-blue-500 dark:hover:bg-slate-800/45 dark:hover:text-blue-400"
+            title={t('新建终端')}
           >
-            <Plus size={14} />
+            <Plus size={11} />
           </button>
         </div>
       </div>
 
-      <div className="flex-1 relative overflow-hidden">
+      <div className="relative flex-1 overflow-hidden">
         {terminalState.tabs.map((tab) => (
           <div
             key={tab.id}
@@ -102,9 +134,12 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ className = '', onClose, 
           >
             <TerminalWindow
               key={`${activeProjectId}-${tab.id}`}
-              className="w-full h-full"
+              className="h-full w-full"
               sessionId={tab.id}
+              projectId={activeProjectId}
+              projectName={activeProject?.name}
               workingDir={workingDir}
+              active={isOpen && terminalState.activeTabId === tab.id}
             />
           </div>
         ))}

@@ -1,185 +1,317 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
+import {
+  closestCenter,
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  rectSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { useStore, Command } from '../store';
-import { Play, Square, TerminalSquare, Plus, Settings2, RefreshCw } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { Play, Square, TerminalSquare, Plus, Settings2, RefreshCw, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { CommandConfigModal } from './CommandConfigModal';
+import { useCommandRunner } from '../hooks/useCommandRunner';
+
+interface SortableCommandCardProps {
+  command: Command;
+  onEdit: (command: Command, event: React.MouseEvent) => void;
+  onRun: (command: Command) => void;
+  onStop: (command: Command) => void;
+  onRestart: (command: Command) => void;
+  onSetDefault: (command: Command) => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}
+
+function SortableCommandCard({
+  command,
+  onEdit,
+  onRun,
+  onStop,
+  onRestart,
+  onSetDefault,
+  t,
+}: SortableCommandCardProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: command.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition: isDragging ? undefined : transition,
+  };
+  const isRunning = command.status === 'running';
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`group relative flex min-h-[144px] flex-col rounded-xl p-3.5 will-change-transform transition-[background-color,border-color,box-shadow,transform] duration-150 ${
+        isDragging
+          ? 'z-20 scale-[1.015] cursor-grabbing shadow-2xl ring-2 ring-blue-400/60'
+          : ''
+      } ${
+        isRunning
+          ? 'border border-blue-200/80 bg-blue-50/75 shadow-sm dark:border-blue-500/25 dark:bg-blue-500/10'
+          : 'border border-slate-200/80 bg-white/85 hover:border-slate-300 hover:bg-white dark:border-slate-700/60 dark:bg-slate-900/40 dark:hover:border-slate-600 dark:hover:bg-slate-800/55'
+      }`}
+    >
+      <div className="mb-auto flex items-start justify-between gap-3.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-2">
+            <button
+              type="button"
+              {...attributes}
+              {...listeners}
+              className="cursor-grab active:cursor-grabbing touch-none select-none text-slate-300 dark:text-slate-600 hover:text-slate-500 dark:hover:text-slate-300 transition-colors text-sm"
+              title={t('拖拽排序')}
+            >
+              ⋮⋮
+            </button>
+            <span className="truncate text-base font-semibold tracking-tight text-slate-800 transition-colors dark:text-slate-200">
+              {command.label}
+            </span>
+            {command.isDefault && (
+              <span className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50/80 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400">
+                {t('默认启动')}
+              </span>
+            )}
+          </div>
+          <p className="truncate font-mono text-[11px] text-slate-500 opacity-75 dark:text-slate-400" title={command.cmd}>
+            $ {command.cmd}
+          </p>
+        </div>
+
+        <button
+          onClick={(event) => onEdit(command, event)}
+          className="shrink-0 rounded-md border border-transparent p-1.5 text-slate-400 opacity-0 transition-[opacity,color,background-color,border-color] group-hover:opacity-100 hover:border-slate-200/80 hover:bg-white hover:text-slate-600 dark:text-slate-500 dark:hover:border-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+          title={t('编辑配置')}
+        >
+          <Settings2 size={15} />
+        </button>
+      </div>
+
+      <div className="mt-3.5 flex items-center justify-between gap-2 border-t border-slate-200/80 pt-3.5 transition-colors dark:border-slate-700/60">
+        <button
+          type="button"
+          onClick={() => onSetDefault(command)}
+          disabled={command.isDefault}
+          className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+            command.isDefault
+              ? 'cursor-default border-emerald-200 bg-emerald-50/80 text-emerald-600 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400'
+              : 'border-slate-200 bg-slate-50/90 text-slate-600 hover:border-emerald-300 hover:text-emerald-600 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-300 dark:hover:border-emerald-500/40 dark:hover:text-emerald-400'
+          }`}
+          title={command.isDefault ? t('默认启动') : t('设为默认启动')}
+        >
+          <Sparkles size={13} />
+          <span>{command.isDefault ? t('默认启动') : t('设为默认启动')}</span>
+        </button>
+
+        <div className="flex items-center gap-1.5">
+          {isRunning ? (
+            <>
+              <button
+                onClick={() => onRestart(command)}
+                className="flex items-center gap-1.5 rounded-md border border-yellow-200 bg-yellow-50 px-2.5 py-1 text-[11px] font-medium text-yellow-600 transition-colors hover:bg-yellow-100 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-500 dark:hover:bg-yellow-500/20"
+                title={t('重启')}
+              >
+                <RefreshCw size={13} />
+                <span>{t('重启')}</span>
+              </button>
+              <button
+                onClick={() => onStop(command)}
+                className="flex items-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-100 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-500 dark:hover:bg-red-500/20"
+                title={t('停止')}
+              >
+                <Square size={13} className="fill-current" />
+                <span>{t('停止')}</span>
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => onRun(command)}
+              className="flex items-center space-x-1.5 rounded-md border border-blue-500 bg-blue-600 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-blue-500 dark:border-blue-500 dark:bg-blue-600 dark:hover:bg-blue-500"
+              title={t('运行')}
+            >
+              <Play size={14} className="fill-current" />
+              <span>{t('运行')}</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export const ActionGrid: React.FC = () => {
-  const { projects, activeProjectId, updateCommand, addCommand, setTerminalOpen } = useStore();
+  const { projects, activeProjectId, addCommand, updateCommand, reorderCommands } = useStore();
+  const { runCommand, stopCommand, restartCommand } = useCommandRunner();
+
   const { t } = useTranslation();
-  const activeProject = projects.find(p => p.id === activeProjectId);
+  const [editingCommand, setEditingCommand] = useState<Command | null>(null);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
 
-  if (!activeProject) return null;
+  const activeProject = projects.find((project) => project.id === activeProjectId);
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 2,
+      },
+    }),
+  );
 
-  const handleRun = async (cmd: Command) => {
-    if (cmd.status === 'running') return;
-    
+  const commandIds = useMemo(
+    () => activeProject?.commands.map((command) => command.id) ?? [],
+    [activeProject?.commands],
+  );
+
+  if (!activeProject) {
+    return null;
+  }
+
+  const handleRun = async (command: Command) => {
     try {
-      updateCommand(activeProject.id, cmd.id, { status: 'running' });
-      const pid = await invoke<number>("run_command", {
-        path: activeProject.path,
-        cmd: cmd.cmd,
-        cmdId: cmd.id
-      });
-      updateCommand(activeProject.id, cmd.id, { pid });
-    } catch (e) {
-      console.error(e);
-      updateCommand(activeProject.id, cmd.id, { status: 'idle', pid: null });
+      await runCommand(activeProject.id, command.id);
+    } catch (error) {
+      console.error(error);
+      alert(t('运行命令失败：{{error}}', { error: String(error) }));
     }
   };
 
-  const handleStop = async (cmd: Command) => {
-    if (cmd.status !== 'running' || !cmd.pid) return;
-    
+  const handleStop = async (command: Command) => {
     try {
-      await invoke("kill_command", { pid: cmd.pid });
-      updateCommand(activeProject.id, cmd.id, { status: 'idle', pid: null });
-    } catch (e) {
-      console.error(e);
-      updateCommand(activeProject.id, cmd.id, { status: 'idle', pid: null });
+      await stopCommand(activeProject.id, command.id);
+    } catch (error) {
+      console.error(error);
+      alert(t('停止进程失败：{{error}}', { error: String(error) }));
     }
   };
 
-  const handleRestart = async (cmd: Command) => {
-    if (cmd.status !== 'running' || !cmd.pid) return;
-    
+  const handleRestart = async (command: Command) => {
     try {
-      await invoke("kill_command", { pid: cmd.pid });
-    } catch (e) {
-      console.error("Kill failed during restart", e);
+      await restartCommand(activeProject.id, command.id);
+    } catch (error) {
+      console.error(error);
+      alert(t('重启进程失败：{{error}}', { error: String(error) }));
     }
-    
-    updateCommand(activeProject.id, cmd.id, { status: 'idle', pid: null });
-    
-    // 给系统释放端口留出 600ms 余量，然后再重新执行
-    setTimeout(async () => {
-      try {
-        updateCommand(activeProject.id, cmd.id, { status: 'running' });
-        const pid = await invoke<number>("run_command", {
-          path: activeProject.path,
-          cmd: cmd.cmd,
-          cmdId: cmd.id
-        });
-        updateCommand(activeProject.id, cmd.id, { pid });
-      } catch (e) {
-        console.error("Restart error", e);
-        updateCommand(activeProject.id, cmd.id, { status: 'idle', pid: null });
-      }
-    }, 600);
   };
 
-  const handleAddCustom = () => {
-    const customLabel = prompt(t("Enter command name (e.g., Lint):"), "new-command");
-    if (!customLabel) return;
-    const customCmd = prompt(t("Enter exact CLI command:"), "npm run lint");
-    if (!customCmd) return;
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
 
-    addCommand(activeProject.id, customLabel, customCmd);
+    const oldIndex = activeProject.commands.findIndex((command) => command.id === active.id);
+    const newIndex = activeProject.commands.findIndex((command) => command.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) {
+      return;
+    }
+
+    const nextCommands = arrayMove(activeProject.commands, oldIndex, newIndex);
+    reorderCommands(activeProject.id, nextCommands.map((command) => command.id));
   };
 
-  const handleEdit = (cmd: Command, e: React.MouseEvent) => {
-    e.stopPropagation(); // 阻止冒泡
-    const newLabel = prompt(t("Edit command name:"), cmd.label);
-    if (!newLabel) return;
-    const newCmd = prompt(t("Edit exact CLI command:"), cmd.cmd);
-    if (!newCmd) return;
+  const handleSetDefault = (command: Command) => {
+    if (command.isDefault) {
+      return;
+    }
 
-    updateCommand(activeProject.id, cmd.id, { label: newLabel, cmd: newCmd });
+    updateCommand(activeProject.id, command.id, { isDefault: true });
+  };
+
+  const handleCreateSubmit = (values: { label: string; cmd: string; isDefault: boolean }) => {
+    addCommand(activeProject.id, values.label, values.cmd, { isDefault: values.isDefault });
+    setIsCreateOpen(false);
+  };
+
+  const handleEditSubmit = (values: { label: string; cmd: string; isDefault: boolean }) => {
+    if (!editingCommand) {
+      return;
+    }
+
+    updateCommand(activeProject.id, editingCommand.id, {
+      label: values.label,
+      cmd: values.cmd,
+      isDefault: values.isDefault,
+    });
+    setEditingCommand(null);
   };
 
   return (
-    <div className="p-6">
-      <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-6 flex items-center justify-between transition-colors">
-        <div className="flex items-center">
-          <TerminalSquare className="mr-3 text-blue-500" />
-          {t('Console Commands')}
+    <>
+      <div className="p-4">
+        <div className="mb-4 flex items-end justify-between gap-4 border-b border-slate-200/80 pb-3 transition-colors dark:border-slate-800/70">
+          <div>
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-800 dark:text-slate-100">
+              <TerminalSquare size={17} className="text-blue-500" />
+              {t('Console Commands')}
+            </h2>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500 dark:text-slate-400">
+              {t('拖动左上角把手可排序；任意命令都可一键设为默认启动。')}
+            </p>
+          </div>
+          <div className="shrink-0 rounded-md border border-slate-200/80 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-slate-500 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-400">
+            {activeProject.commands.length} {t('条命令')}
+          </div>
         </div>
-        <button 
-          onClick={() => setTerminalOpen(true)}
-          className="text-sm flex items-center bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors shadow-sm cursor-pointer"
-          title={t("打开终端面板")}
-        >
-          <TerminalSquare size={16} className="mr-2" />
-          <span>{t('终端')}</span>
-        </button>
-      </h2>
 
-      <div className="grid grid-cols-2 xl:grid-cols-3 gap-4">
-        {activeProject.commands.map(cmd => {
-          const isRunning = cmd.status === 'running';
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={commandIds} strategy={rectSortingStrategy}>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+              {activeProject.commands.map((command) => (
+                <SortableCommandCard
+                  key={command.id}
+                  command={command}
+                  onEdit={(nextCommand, event) => {
+                    event.stopPropagation();
+                    setEditingCommand(nextCommand);
+                  }}
+                  onRun={handleRun}
+                  onStop={handleStop}
+                  onRestart={handleRestart}
+                  onSetDefault={handleSetDefault}
+                  t={t}
+                />
+              ))}
 
-          return (
-              <div 
-              key={cmd.id} 
-              className={`group relative p-5 rounded-2xl transition-all duration-300 flex flex-col min-h-[140px] ${
-                isRunning 
-                  ? 'bg-blue-50 dark:bg-blue-600/10 border border-blue-200 dark:border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.1)] dark:shadow-[0_0_20px_rgba(59,130,246,0.2)]' 
-                  : 'bg-white dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/50 hover:border-blue-300 dark:hover:border-blue-500/50 hover:bg-slate-50 dark:hover:bg-slate-800/60'
-              }`}
-            >
-              {/* Header / Name */}
-              <div className="flex justify-between items-start mb-auto">
-                <span className="font-semibold text-slate-800 dark:text-slate-200 tracking-tight text-lg transition-colors">
-                  {cmd.label}
-                </span>
-                <div className="flex space-x-2">
-                  <button 
-                    onClick={(e) => handleEdit(cmd, e)}
-                    className="text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity"
-                    title={t("Edit Configuration")}
-                  >
-                    <Settings2 size={18} />
-                  </button>
-                  
-                  {isRunning ? (
-                    <>
-                      <button 
-                        onClick={() => handleRestart(cmd)}
-                        className="flex items-center space-x-1.5 bg-yellow-50 dark:bg-yellow-500/10 hover:bg-yellow-100 dark:hover:bg-yellow-500/20 text-yellow-600 dark:text-yellow-500 px-3 py-1.5 rounded-lg border border-yellow-200 dark:border-yellow-500/20 font-medium text-sm transition-colors"
-                        title={t("Restart")}
-                      >
-                        <RefreshCw size={14} />
-                        <span>{t('Restart')}</span>
-                      </button>
-                      <button 
-                        onClick={() => handleStop(cmd)}
-                        className="flex items-center space-x-1.5 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 text-red-600 dark:text-red-500 px-3 py-1.5 rounded-lg border border-red-200 dark:border-red-500/20 font-medium text-sm transition-colors"
-                        title={t("Stop")}
-                      >
-                        <Square size={14} className="fill-current" />
-                        <span>{t('Stop')}</span>
-                      </button>
-                    </>
-                  ) : (
-                    <button 
-                      onClick={() => handleRun(cmd)}
-                      className="flex items-center space-x-1.5 bg-blue-500 dark:bg-blue-600 text-white hover:bg-blue-600 dark:hover:bg-blue-500 px-3 py-1.5 rounded-lg border border-transparent font-medium text-sm transition-colors shadow-sm shadow-blue-500/20 dark:shadow-blue-500/30 group-hover:shadow-blue-500/40 dark:group-hover:shadow-blue-500/50"
-                      title={t("Run")}
-                    >
-                      <Play size={14} className="fill-current" />
-                      <span>{t('Run')}</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-              
-              {/* Cmd String */}
-              <p className="font-mono text-xs text-slate-500 dark:text-slate-400 opacity-50 truncate mt-4 pt-4 border-t border-slate-200 dark:border-slate-700/50 transition-colors" title={cmd.cmd}>
-                $ {cmd.cmd}
-              </p>
+              <button
+                onClick={() => setIsCreateOpen(true)}
+                className="group flex min-h-[144px] flex-col items-center justify-center rounded-xl border border-dashed border-slate-300/90 bg-slate-50/70 p-4 text-slate-500 transition-all hover:border-blue-400 hover:bg-white hover:text-blue-500 dark:border-slate-700 dark:bg-slate-800/20 dark:hover:border-blue-500/50 dark:hover:bg-slate-800/40 dark:hover:text-blue-400"
+              >
+                <Plus size={22} className="mb-2 transition-transform group-hover:scale-110" />
+                <span className="text-sm font-medium tracking-wide">{t('添加自定义命令')}</span>
+              </button>
             </div>
-          );
-        })}
-        
-        {/* ADD Custom Command */}
-        <button 
-          onClick={handleAddCustom}
-          className="rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/20 flex flex-col items-center justify-center p-6 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800/40 hover:border-blue-400 dark:hover:border-blue-500/50 hover:text-blue-500 dark:hover:text-blue-400 transition-all min-h-[140px] group"
-        >
-          <Plus size={28} className="mb-2 group-hover:scale-110 transition-transform" />
-          <span className="font-medium text-sm tracking-wide">{t('添加自定义命令')}</span>
-        </button>
+          </SortableContext>
+        </DndContext>
       </div>
-    </div>
+
+      <CommandConfigModal
+        open={isCreateOpen}
+        mode="create"
+        onClose={() => setIsCreateOpen(false)}
+        onSubmit={handleCreateSubmit}
+      />
+      <CommandConfigModal
+        open={Boolean(editingCommand)}
+        mode="edit"
+        initialCommand={editingCommand}
+        onClose={() => setEditingCommand(null)}
+        onSubmit={handleEditSubmit}
+      />
+    </>
   );
 };

@@ -27,10 +27,10 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   options, 
   onChange, 
   className = "",
-  buttonClassName = "flex items-center justify-between w-full px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors",
+  buttonClassName = "flex w-full items-center justify-between rounded-xl border border-slate-200/80 bg-white/90 px-3.5 py-2.5 text-sm text-slate-700 transition-[border-color,background-color,color,box-shadow] hover:border-slate-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700/80 dark:bg-slate-900/80 dark:text-slate-200 dark:hover:border-slate-600 dark:hover:bg-slate-900",
   dropdownClassName = "left-0",
   hideChevron = false,
-  hideLabelDisplay = false
+  hideLabelDisplay = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -50,31 +50,33 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   return (
     <div className={`relative ${className}`} ref={containerRef}>
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
         className={buttonClassName}
       >
         {!hideLabelDisplay && <span className="truncate">{selectedOption.label}</span>}
         {!hideChevron && (
-          <ChevronDown size={14} className={`shrink-0 transition-transform duration-200 text-slate-400 ${!hideLabelDisplay ? 'ml-2' : ''} ${isOpen ? 'rotate-180 text-blue-400' : ''}`} />
+          <ChevronDown size={14} className={`shrink-0 text-slate-400 transition-transform duration-200 dark:text-slate-500 ${!hideLabelDisplay ? 'ml-2' : ''} ${isOpen ? 'rotate-180 text-blue-500 dark:text-blue-400' : ''}`} />
         )}
       </button>
 
       {isOpen && (
-        <div className={`absolute z-50 mt-1.5 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden py-1.5 min-w-[150px] animate-in slide-in-from-top-2 fade-in duration-200 ${dropdownClassName}`}>
+        <div className={`absolute z-50 mt-1.5 min-w-[150px] overflow-hidden rounded-xl border border-slate-200/80 bg-white/95 py-1.5 shadow-xl shadow-slate-200/60 backdrop-blur dark:border-slate-700/80 dark:bg-slate-900/95 dark:shadow-black/40 animate-in slide-in-from-top-2 fade-in duration-200 ${dropdownClassName}`}>
           {options.map((option) => (
             <button
               key={option.value}
+              type="button"
               onClick={() => {
                 onChange(option.value);
                 setIsOpen(false);
               }}
-              className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between transition-colors
+              className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors
                 ${value === option.value 
-                  ? 'bg-blue-600/10 text-blue-400 font-semibold' 
-                  : 'text-slate-300 hover:bg-slate-700/80 hover:text-white'}`}
+                  ? 'bg-blue-50 text-blue-600 font-semibold dark:bg-blue-500/10 dark:text-blue-300' 
+                  : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'}`}
             >
               <span>{option.label}</span>
-              {value === option.value && <Check size={14} className="text-blue-500 ml-3" />}
+              {value === option.value && <Check size={14} className="ml-3 text-blue-500 dark:text-blue-400" />}
             </button>
           ))}
         </div>

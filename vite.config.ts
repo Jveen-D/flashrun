@@ -4,9 +4,48 @@ import react from "@vitejs/plugin-react";
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
+const createManualChunks = (id: string) => {
+  if (!id.includes("node_modules")) {
+    return undefined;
+  }
+
+  if (id.includes("node_modules/react") || id.includes("node_modules/scheduler")) {
+    return "react-vendor";
+  }
+
+  if (id.includes("node_modules/@tauri-apps/")) {
+    return "tauri-vendor";
+  }
+
+  if (id.includes("node_modules/xterm") || id.includes("node_modules/xterm-addon-")) {
+    return "terminal-vendor";
+  }
+
+  if (id.includes("node_modules/@dnd-kit/")) {
+    return "dnd-vendor";
+  }
+
+  if (id.includes("node_modules/i18next") || id.includes("node_modules/react-i18next")) {
+    return "i18n-vendor";
+  }
+
+  if (id.includes("node_modules/lucide-react")) {
+    return "icons-vendor";
+  }
+
+  return undefined;
+};
+
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: createManualChunks,
+      },
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
