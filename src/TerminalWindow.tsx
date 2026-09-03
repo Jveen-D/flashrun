@@ -47,7 +47,7 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
         cursor: '#60a5fa',
         cursorAccent: '#1e293b',
       },
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontFamily: '"Cascadia Mono", Consolas, "Segoe UI Symbol", "Microsoft YaHei UI", "Courier New", monospace',
       fontSize: 12,
       lineHeight: 1.45,
       convertEol: true,

@@ -51,10 +51,11 @@ interface SortableProjectItemProps {
   id: string;
   onClick: () => void;
   dragLabel: string;
+  expanded: boolean;
   children: React.ReactNode;
 }
 
-function SortableProjectItem({ id, onClick, dragLabel, children }: SortableProjectItemProps) {
+function SortableProjectItem({ id, onClick, dragLabel, expanded, children }: SortableProjectItemProps) {
   const {
     attributes,
     listeners,
@@ -78,7 +79,7 @@ function SortableProjectItem({ id, onClick, dragLabel, children }: SortableProje
         {...attributes}
         {...listeners}
         onClick={(event) => event.stopPropagation()}
-        className="absolute right-1 top-1 z-30 flex h-5 w-5 cursor-grab items-center justify-center rounded text-slate-400 opacity-0 transition-opacity hover:bg-white hover:text-slate-600 group-hover:opacity-100 active:cursor-grabbing dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+        className={`absolute z-30 flex h-5 w-5 cursor-grab items-center justify-center rounded text-slate-400 opacity-0 transition-opacity hover:bg-white hover:text-slate-600 group-hover:opacity-100 active:cursor-grabbing dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-300 ${expanded ? 'right-1 top-1' : 'bottom-0 left-0'}`}
         title={dragLabel}
       >
         <GripVertical size={12} />
@@ -290,6 +291,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
               id={project.id}
               onClick={() => setActiveProject(project.id)}
               dragLabel={t('拖拽排序')}
+              expanded={effectiveExpanded}
             >
               <div className={`absolute -left-2 top-1/2 z-10 w-1 -translate-y-1/2 rounded-r-md transition-all duration-300 ${
                 isActive
@@ -337,9 +339,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
                   )}
 
                   {isRunning && (
-                    <span className="absolute -left-1 -top-1 z-20 flex h-3 w-3 items-center justify-center">
+                    <span className="absolute -right-1 -top-1 z-20 flex h-3.5 w-3.5 items-center justify-center">
                       <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                      <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                      <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
                     </span>
                   )}
                 </div>

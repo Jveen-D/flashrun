@@ -277,8 +277,12 @@ fn run_command(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        let utf8_command = format!("chcp 65001>nul & {}", cmd);
         command.creation_flags(0x08000200);
-        command.args(["/d", "/s", "/c", &cmd]);
+        command.args(["/d", "/q", "/s", "/c"]);
+        command.raw_arg(format!("\"{}\"", utf8_command));
+        command.env("PYTHONUTF8", "1");
+        command.env("PYTHONIOENCODING", "utf-8");
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -399,6 +403,9 @@ fn create_shell_session(
         let mut c = Command::new("cmd.exe");
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x08000200);
+        c.args(["/d", "/q", "/k", "chcp 65001>nul"]);
+        c.env("PYTHONUTF8", "1");
+        c.env("PYTHONIOENCODING", "utf-8");
         c
     };
 
