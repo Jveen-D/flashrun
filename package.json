@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run",
+    "lint": "eslint src tests vite.config.ts vitest.config.ts && tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
+    "check": "pnpm lint && pnpm test && pnpm build"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -39,6 +42,15 @@
     "postcss": "^8.5.8",
     "tailwindcss": "^3.4.19",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^3.2.7",
+    "eslint": "^10.0.0",
+    "@eslint/js": "^10.0.0",
+    "typescript-eslint": "^8.71.1",
+    "globals": "^16.0.0"
+  },
+  "packageManager": "pnpm@10.34.6",
+  "engines": {
+    "node": "^22.13.0 || >=24.0.0"
   }
 }

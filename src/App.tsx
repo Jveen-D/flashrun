@@ -11,11 +11,14 @@ import { TopBar } from './components/TopBar';
 import { ActionGrid } from './components/ActionGrid';
 import { SettingsModal } from './components/SettingsModal';
 
-import { useStore } from './store';
+import { flushPersistence, retryPersistence, useStore } from './store';
+import { reconcileShellSessions } from './utils/shellSessions';
 import { useTranslation } from 'react-i18next';
 import { eventMatchesShortcut } from './utils/shortcuts';
 import {
   appendTerminalOutput,
+  commandOutputKey,
+  pruneCommandOutput,
   COMMAND_STATUS_EVENT,
   TERMINAL_OUTPUT_EVENT,
   requestTerminalFit,
@@ -83,6 +86,9 @@ function App() {
     updateGlobalSettings,
     hydrate,
     hydrated,
+    hydrationError,
+    persistenceError,
+    projectTerminals,
     isTerminalOpen,
     terminalHeight,
     setTerminalOpen,
@@ -487,6 +493,28 @@ function App() {
   useEffect(() => { void hydrate(); }, [hydrate]);
 
   useEffect(() => {
+    if (!hydrated) return;
+    void reconcileShellSessions(new Set(Object.values(projectTerminals).flatMap((state) => state.tabs.map((tab) => tab.id)))).catch(console.error);
+    pruneCommandOutput(new Set(projects.flatMap((project) => project.commands.map((command) => commandOutputKey(project.id, command.id)))));
+  }, [hydrated, projectTerminals, projects]);
+
+  useEffect(() => {
+    let closing = false;
+    let disposed = false;
+    const subscription = appWindow.onCloseRequested(async (event) => {
+      if (closing) return;
+      event.preventDefault();
+      try {
+        await flushPersistence();
+        closing = true;
+        await appWindow.close();
+      } catch (error) { window.alert(String(error)); }
+    });
+    void subscription.then((unlisten) => { if (disposed) unlisten(); });
+    return () => { disposed = true; void subscription.then((unlisten) => unlisten()); };
+  }, [appWindow]);
+
+  useEffect(() => {
     if (compactModePreview === null || compactModePreview !== actualCompactMode) return;
     setCompactModePreview(null);
   }, [actualCompactMode, compactModePreview]);
@@ -689,6 +717,7 @@ function App() {
 
   useEffect(() => {
     const unlistenPromise = listen<TerminalOutputPayload>(TERMINAL_OUTPUT_EVENT, (event) => {
+      if (!useStore.getState().projects.some((project) => project.id === event.payload.projectId && project.commands.some((command) => command.id === event.payload.commandId))) return;
       appendTerminalOutput(event.payload);
     });
     return () => { unlistenPromise.then((unlisten) => unlisten()); };
@@ -797,6 +826,16 @@ function App() {
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
+      {hydrationError && <div role="alert" className="absolute inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-slate-950 p-8 text-slate-100">
+        <p>配置读取失败，原文件未被覆盖。请修复配置或从备份恢复后重试。</p>
+        <pre className="max-w-full whitespace-pre-wrap text-sm">{hydrationError}</pre>
+        <button className="rounded bg-blue-600 px-4 py-2" onClick={() => void hydrate()}>重试读取</button>
+        <button onClick={() => void appWindow.close()}>退出</button>
+      </div>}
+      {persistenceError && <div role="alert" className="z-50 bg-amber-100 p-2 text-sm text-amber-950">
+        配置未保存：{persistenceError}
+        <button className="ml-2 underline" onClick={() => void retryPersistence().catch(console.error)}>重试保存</button>
+      </div>}
       {showCompactTriggerBandDebug && (
         <>
           <div

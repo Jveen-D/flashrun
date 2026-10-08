@@ -27,13 +27,19 @@ tauri-plugin-store = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 indexmap = { version = "2.13.0", features = ["serde"] }
+portable-pty = "0.9"
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(any(target_os="macos",windows,target_os="linux"))'.dependencies]
 tauri-plugin-positioner = "2.3.1"
 
 [target.'cfg(windows)'.dependencies]
+base64 = "0.22"
 winreg = "0.52"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-global-shortcut = "2.3.1"

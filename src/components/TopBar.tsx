@@ -1,11 +1,12 @@
 import React from 'react';
-import { useStore } from '../store';
+import { useStore, type GlobalSettings } from '../store';
 import { CircleStop, FolderOpen, Folder, LoaderCircle, SquareTerminal } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { CustomSelect } from './CustomSelect';
 import { useTranslation } from 'react-i18next';
 import { EDITOR_LABEL_MAP, EDITOR_OPTIONS } from '../utils/editors';
+import { confirm } from '@tauri-apps/plugin-dialog';
 
 interface TopBarProps {
   isTerminalOpen: boolean;
@@ -24,6 +25,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   const { projects, activeProjectId, globalSettings, updateProjectManager, updateGlobalSettings } = useStore();
   const { t } = useTranslation();
   const [portInput, setPortInput] = React.useState('');
+  const [portProtocol, setPortProtocol] = React.useState<'tcp' | 'udp'>('tcp');
   const [isTerminatingPort, setIsTerminatingPort] = React.useState(false);
   const [portResult, setPortResult] = React.useState('');
 
@@ -58,7 +60,14 @@ export const TopBar: React.FC<TopBarProps> = ({
     setIsTerminatingPort(true);
     setPortResult('');
     try {
-      const result = await invoke<PortTerminationResult>('terminate_port', { port });
+      const expected = await invoke<Array<{ pid: number; name: string }>>('inspect_port', { port, protocol: portProtocol });
+      if (!expected.length) {
+        setPortResult(t('端口 {{port}} 当前未被占用。', { port }));
+        return;
+      }
+      const approved = await confirm(`${portProtocol.toUpperCase()} ${port}\n${expected.map((process) => `${process.name} (PID ${process.pid})`).join('\n')}\n\n终止这些进程？未保存的工作可能丢失。`, { title: '释放端口', kind: 'warning' });
+      if (!approved) return;
+      const result = await invoke<PortTerminationResult>('terminate_port', { port, protocol: portProtocol, expected });
       setPortResult(result.killedPids.length
         ? t('端口 {{port}} 已终止 {{count}} 个进程。', { port, count: result.killedPids.length })
         : t('端口 {{port}} 当前未被占用。', { port }));
@@ -112,6 +121,9 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       <div className="flex shrink-0 items-center gap-1.5">
         <form onSubmit={handleTerminatePort} className="relative flex h-8 items-stretch rounded-md border border-slate-200/80 bg-white/80 dark:border-slate-700/70 dark:bg-slate-900/80">
+          <select aria-label="端口协议" value={portProtocol} onChange={(event) => setPortProtocol(event.target.value as 'tcp' | 'udp')} className="w-14 bg-transparent text-xs">
+            <option value="tcp">TCP</option><option value="udp">UDP</option>
+          </select>
           <label className="sr-only" htmlFor="port-terminator-input">{t('端口')}</label>
           <input
             id="port-terminator-input"
@@ -170,7 +182,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           <div className="flex self-stretch rounded-r-md text-slate-500 transition-colors hover:bg-white hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200">
             <CustomSelect
               value={globalSettings.defaultEditor}
-              onChange={(value) => updateGlobalSettings({ defaultEditor: value as any })}
+              onChange={(value) => updateGlobalSettings({ defaultEditor: value as GlobalSettings['defaultEditor'] })}
               options={EDITOR_OPTIONS.map((option) => ({ label: option.label, value: option.value }))}
               buttonClassName="flex h-full items-center justify-center rounded-r-md px-2.5 text-slate-500 transition-colors hover:text-slate-700 cursor-pointer focus:outline-none dark:text-slate-400 dark:hover:text-slate-200"
               dropdownClassName="right-0 top-full mt-2 w-40"

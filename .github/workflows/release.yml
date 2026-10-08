@@ -9,8 +9,6 @@ jobs:
   release:
     permissions:
       contents: write
-      discussions: write
-      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -22,14 +20,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
+        uses: pnpm/action-setup@v4
 
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'pnpm'
 
       - name: Install Rust stable
@@ -42,7 +38,13 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate frontend
+        run: pnpm lint && pnpm test
+
+      - name: Validate native code
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0

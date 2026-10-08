@@ -64,7 +64,7 @@
 如果你想在此基础上修改一套专属界面或新增私有功能，只需按如下步骤在本地跑起来：
 
 ### 环境前置要求：
-1. [Node.js](https://nodejs.org/) (当前测试通过 Node 20+)
+1. [Node.js](https://nodejs.org/) (当前测试通过 Node 22.13+ / 24+)
 2. [Rust](https://www.rust-lang.org/tools/install) 原生编译工具链
 3. （部分操作系统需补充安装 [Tauri 指定库](https://tauri.app/zh-cn/v1/guides/getting-started/prerequisites)）
 
@@ -91,3 +91,23 @@ pnpm tauri build
 
 本仓库发布遵循 **MIT 协议**。完全开源，欢迎各类代码合并/衍生。
 感谢 `Tauri` 引擎和 `Lucide` 图标集使得开发这套原生系统得以如此优雅。
+
+## 验证与会话管理
+
+使用 `package.json` 中固定的 pnpm 版本安装依赖，然后运行：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm lint
+pnpm test
+pnpm build
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+```
+
+GitHub 的 Windows/macOS 检查会执行前端验证和原生测试。原生测试需要 Node.js，只创建自己的临时目录与测试进程，不读取用户配置或终止用户服务。
+
+- Shell 标签独立于终端视图；隐藏面板、切换项目或精简模式会保留会话。关闭标签会停止对应会话；关闭最后一个标签会创建新的空标签。正常退出应用会清理其管理的进程。
+- 终端顶部可选择某条命令的输出并输入交互内容，或切换到独立 Shell。PTY 处理输入、回显、控制键及窗口尺寸。Unix 中主动通过 `setsid` 等方式脱离会话的守护进程不属于普通会话清理范围。
+- 释放端口前选择 TCP 或 UDP，确认列出的进程后才终止。TCP 仅查询监听者；UDP 依据本地绑定端口筛选。
+- 配置位于用户目录的 `flashrun-config.json`，上次有效内容备份为 `flashrun-config.json.bak`。读取失败时保留原文件并阻止覆盖；修复原文件或从备份恢复后可重试读取。写入失败会显示提示，可重试保存。

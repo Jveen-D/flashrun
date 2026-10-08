@@ -63,7 +63,7 @@ If you maintain 3~5 frontend projects daily, are tired of constantly using `cd` 
 If you want to build a custom UI or add private features on top of this framework, simply follow these steps to run it locally:
 
 ### Prerequisites:
-1. [Node.js](https://nodejs.org/) (Currently tested on Node 20+)
+1. [Node.js](https://nodejs.org/) (Node 22.13+ or Node 24+)
 2. [Rust](https://www.rust-lang.org/tools/install) Native toolchain
 3. (Depending on OS, [Tauri System Dependencies](https://tauri.app/v1/guides/getting-started/prerequisites) may be required)
 
@@ -90,3 +90,23 @@ pnpm tauri build
 
 This repository is released under the **MIT License**. It is fully open-source, and all derivatives or PRs are warmly welcomed.
 A special thanks to the `Tauri` engine and `Lucide` icon set for making native system development this elegant.
+
+## Validation and session lifecycle
+
+Use the pnpm version pinned in `package.json`, then run:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm lint
+pnpm test
+pnpm build
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+```
+
+GitHub checks run frontend validation and native tests on Windows and macOS. Native tests require Node.js and create only their own temporary files and processes.
+
+- Shell sessions survive hidden panels, project switches, and compact mode. Closing a tab stops its session; closing the last tab replaces it with an empty tab. Normal application exit stops managed processes.
+- Select a command in the terminal header to view its output and answer its prompts, or select an independent Shell tab. PTYs handle echo, control keys, and resize events. Unix daemons that explicitly detach into another session (for example with `setsid`) are outside normal session cleanup.
+- Port termination first shows the selected TCP listeners or locally bound UDP processes for confirmation.
+- Configuration lives at `~/flashrun-config.json` (the user profile directory on Windows). The previous valid snapshot is kept as `flashrun-config.json.bak`. A failed read blocks overwriting; repair the original file or restore the backup and retry. Failed saves are visible and can be retried.

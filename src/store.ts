@@ -88,6 +88,8 @@ const MAX_COMPACT_PEEK_HEIGHT = 5;
 let persistQueue: Promise<void> = Promise.resolve();
 let isPersisting = false;
 let needsPersist = false;
+let persistenceAllowed = false;
+let hydratePromise: Promise<void> | null = null;
 
 function createDefaultTerminalTab(title = 'Terminal 1'): TerminalTabItem {
   return {
@@ -375,6 +377,7 @@ async function loadPersistedState(): Promise<PersistedState> {
 }
 
 function enqueuePersist(buildNextState: (state: PersistedState) => PersistedState) {
+  if (!persistenceAllowed) return Promise.resolve();
   persistedStateCache = sanitizePersistedState(buildNextState(persistedStateCache));
   needsPersist = true;
 
@@ -385,12 +388,18 @@ function enqueuePersist(buildNextState: (state: PersistedState) => PersistedStat
   isPersisting = true;
   persistQueue = (async () => {
     while (needsPersist) {
+      // Coalesce resize/drag updates; close waits for this queue before exiting.
+      await new Promise((resolve) => setTimeout(resolve, 100));
       needsPersist = false;
 
       try {
         await invoke('save_app_config', { config: persistedStateCache });
+        useStore.setState({ persistenceError: null });
       } catch (error) {
         console.error('Failed to persist FlashRun config:', error);
+        needsPersist = true;
+        useStore.setState({ persistenceError: String(error) });
+        break;
       }
     }
   })().finally(() => {
@@ -430,6 +439,12 @@ async function persistUiPreferences(uiPreferences: UiPreferences) {
 
 export async function flushPersistence() {
   await persistQueue;
+  if (needsPersist || useStore.getState().persistenceError) throw new Error('配置尚未保存，请重试保存后再退出。');
+}
+
+export async function retryPersistence() {
+  await enqueuePersist((state) => state);
+  await flushPersistence();
 }
 
 interface StoreState {
@@ -437,6 +452,8 @@ interface StoreState {
   activeProjectId: string | null;
   globalSettings: GlobalSettings;
   hydrated: boolean;
+  hydrationError: string | null;
+  persistenceError: string | null;
   activeCommandByProject: Record<string, string | null>;
 
   hydrate: () => Promise<void>;
@@ -475,6 +492,8 @@ export const useStore = create<StoreState>((set) => ({
   activeProjectId: null,
   globalSettings: DEFAULT_SETTINGS,
   hydrated: false,
+  hydrationError: null,
+  persistenceError: null,
   activeCommandByProject: {},
   isTerminalOpen: false,
   terminalHeight: DEFAULT_TERMINAL_HEIGHT,
@@ -483,6 +502,9 @@ export const useStore = create<StoreState>((set) => ({
   projectTerminals: {},
 
   hydrate: async () => {
+    if (hydratePromise) return hydratePromise;
+    persistenceAllowed = false;
+    hydratePromise = (async () => {
     try {
       const persistedState = await loadPersistedState();
 
@@ -491,6 +513,7 @@ export const useStore = create<StoreState>((set) => ({
         activeProjectId: persistedState.activeProjectId,
         globalSettings: persistedState.settings,
         hydrated: true,
+        hydrationError: null,
         activeCommandByProject: createActiveCommandMap(persistedState.projects),
         isTerminalOpen: persistedState.uiPreferences.isTerminalOpen,
         terminalHeight: persistedState.uiPreferences.terminalHeight,
@@ -498,13 +521,15 @@ export const useStore = create<StoreState>((set) => ({
         sidebarWidth: persistedState.uiPreferences.sidebarWidth,
         projectTerminals: persistedState.uiPreferences.projectTerminals,
       });
+      persistenceAllowed = true;
     } catch (error) {
       console.error('Failed to hydrate FlashRun config:', error);
       set({
         projects: [],
         activeProjectId: null,
         globalSettings: DEFAULT_SETTINGS,
-        hydrated: true,
+        hydrated: false,
+        hydrationError: String(error),
         activeCommandByProject: {},
         isTerminalOpen: false,
         terminalHeight: DEFAULT_TERMINAL_HEIGHT,
@@ -513,6 +538,8 @@ export const useStore = create<StoreState>((set) => ({
         projectTerminals: {},
       });
     }
+    })();
+    try { await hydratePromise; } finally { hydratePromise = null; }
   },
 
   addProject: (path, manager, scripts) => {
@@ -849,15 +876,13 @@ export const useStore = create<StoreState>((set) => ({
 
   closeTerminalTab: (projectId, tabId) => set((state) => {
     const terminalState = sanitizeProjectTerminalState(state.projectTerminals[projectId]);
-    if (terminalState.tabs.length <= 1) {
-      return state;
-    }
 
     const closedTabIndex = terminalState.tabs.findIndex((tab) => tab.id === tabId);
-    const tabs = normalizeTerminalTabs(terminalState.tabs.filter((tab) => tab.id !== tabId));
-    if (tabs.length === terminalState.tabs.length) {
+    const remaining = terminalState.tabs.filter((tab) => tab.id !== tabId);
+    if (remaining.length === terminalState.tabs.length) {
       return state;
     }
+    const tabs = normalizeTerminalTabs(remaining.length ? remaining : [createDefaultTerminalTab()]);
 
     const activeTabId = terminalState.activeTabId === tabId
       ? tabs[Math.min(Math.max(closedTabIndex, 0), tabs.length - 1)]?.id ?? tabs[0]?.id ?? null

@@ -1,17 +1,19 @@
-use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::process::Command;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, LogicalSize, PhysicalPosition, PhysicalSize, Position, Size, Window};
+use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size, Window};
+
+mod config;
+mod ports;
+mod sessions;
+use sessions::{Output, ProcessManager};
 
 const CONFIG_FILE_NAME: &str = "flashrun-config.json";
+#[cfg(windows)]
 const LEGACY_APP_IDENTIFIER: &str = "com.d8506.flashrun";
 
 fn config_file_path() -> Result<PathBuf, String> {
@@ -28,9 +30,11 @@ fn config_file_path() -> Result<PathBuf, String> {
 fn legacy_config_file_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        return std::env::var("APPDATA")
-            .ok()
-            .map(|app_data| PathBuf::from(app_data).join(LEGACY_APP_IDENTIFIER).join(CONFIG_FILE_NAME));
+        return std::env::var("APPDATA").ok().map(|app_data| {
+            PathBuf::from(app_data)
+                .join(LEGACY_APP_IDENTIFIER)
+                .join(CONFIG_FILE_NAME)
+        });
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -52,38 +56,7 @@ fn migrate_legacy_config_if_needed(target_path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let content = fs::read_to_string(&legacy_path).map_err(|e| format!("读取旧配置失败: {}", e))?;
-
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {}", e))?;
-    }
-
-    fs::write(target_path, content).map_err(|e| format!("迁移旧配置失败: {}", e))?;
-
-    Ok(())
-}
-
-#[derive(Clone)]
-struct ProcessManager {
-    stdinmap: Arc<Mutex<HashMap<u32, ChildStdin>>>,
-}
-
-impl ProcessManager {
-    fn new() -> Self {
-        Self {
-            stdinmap: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    fn insert_stdin(&self, pid: u32, stdin: ChildStdin) {
-        let mut map = self.stdinmap.lock().unwrap();
-        map.insert(pid, stdin);
-    }
-
-    fn remove_stdin(&self, pid: u32) {
-        let mut map = self.stdinmap.lock().unwrap();
-        map.remove(&pid);
-    }
+    config::migrate(&legacy_path, target_path)
 }
 
 #[derive(Serialize)]
@@ -175,7 +148,9 @@ where
 
                     if let Some(error_length) = error.error_len() {
                         let invalid_end = (valid_end + error_length).min(pending.len());
-                        emit(String::from_utf8_lossy(&pending[valid_end..invalid_end]).into_owned());
+                        emit(
+                            String::from_utf8_lossy(&pending[valid_end..invalid_end]).into_owned(),
+                        );
                         consumed = invalid_end;
                     } else {
                         consumed = valid_end;
@@ -212,7 +187,8 @@ fn parse_project_info(path: String) -> Result<ProjectInfo, String> {
         "npm"
     };
 
-    let content = fs::read_to_string(&pkg_json_path).map_err(|e| format!("读取 package.json 失败: {}", e))?;
+    let content =
+        fs::read_to_string(&pkg_json_path).map_err(|e| format!("读取 package.json 失败: {}", e))?;
 
     let parsed: PackageJson = serde_json::from_str(&content).unwrap_or(PackageJson {
         scripts: Some(IndexMap::new()),
@@ -227,44 +203,34 @@ fn parse_project_info(path: String) -> Result<ProjectInfo, String> {
 }
 
 #[tauri::command]
-fn load_app_config() -> Result<Option<serde_json::Value>, String> {
-    let path = config_file_path()?;
-    migrate_legacy_config_if_needed(&path)?;
-
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&path).map_err(|e| format!("读取配置文件失败: {}", e))?;
-
-    if content.trim().is_empty() {
-        return Ok(None);
-    }
-
-    let config = serde_json::from_str(&content).map_err(|e| format!("解析配置文件失败: {}", e))?;
-
-    Ok(Some(config))
+async fn load_app_config(
+    state: tauri::State<'_, config::ConfigFile>,
+) -> Result<Option<serde_json::Value>, String> {
+    let config = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        migrate_legacy_config_if_needed(&config_file_path()?)?;
+        config.load()
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn save_app_config(config: serde_json::Value) -> Result<String, String> {
-    let path = config_file_path()?;
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {}", e))?;
-    }
-
-    let content = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化配置失败: {}", e))?;
-
-    fs::write(&path, content).map_err(|e| format!("写入配置文件失败: {}", e))?;
-
-    Ok(path.to_string_lossy().into_owned())
+async fn save_app_config(
+    state: tauri::State<'_, config::ConfigFile>,
+    config: serde_json::Value,
+) -> Result<String, String> {
+    let file = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || file.save(config))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn run_command(
+#[allow(clippy::too_many_arguments)]
+async fn run_command(
     app: tauri::AppHandle,
-    state: tauri::State<ProcessManager>,
+    state: tauri::State<'_, ProcessManager>,
     path: String,
     cmd: String,
     cmd_id: String,
@@ -272,349 +238,78 @@ fn run_command(
     project_name: String,
     command_label: String,
 ) -> Result<u32, String> {
-    #[cfg(target_os = "windows")]
-    let mut command = Command::new("cmd");
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        let utf8_command = format!("chcp 65001>nul & {}", cmd);
-        command.creation_flags(0x08000200);
-        command.args(["/d", "/q", "/s", "/c"]);
-        command.raw_arg(format!("\"{}\"", utf8_command));
-        command.env("PYTHONUTF8", "1");
-        command.env("PYTHONIOENCODING", "utf-8");
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    let mut command = Command::new("sh");
-    #[cfg(not(target_os = "windows"))]
-    command.args(["-c", &cmd]);
-
-    command
-        .current_dir(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = command.spawn().map_err(|e| e.to_string())?;
-    let pid = child.id();
-
-    if let Some(stdin) = child.stdin.take() {
-        state.insert_stdin(pid, stdin);
-    }
-
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
-
-    let started_payload = CommandStatusPayload {
-        project_id: project_id.clone(),
-        command_id: cmd_id.clone(),
-        project_name: project_name.clone(),
-        command_label: command_label.clone(),
-        pid,
-        status: "started".to_string(),
-        exit_code: None,
-    };
-    let _ = app.emit("command-status", started_payload);
-
-    let app_handle_out = app.clone();
-    let project_id_out = project_id.clone();
-    let project_name_out = project_name.clone();
-    let command_label_out = command_label.clone();
-    let cmd_id_out = cmd_id.clone();
-    std::thread::spawn(move || {
-        stream_terminal_output(stdout, |data| {
-            let payload = TerminalOutputPayload {
-                project_id: project_id_out.clone(),
-                command_id: cmd_id_out.clone(),
-                project_name: project_name_out.clone(),
-                command_label: command_label_out.clone(),
-                data,
-            };
-            let _ = app_handle_out.emit("terminal-out", payload);
-        });
-    });
-
-    let app_handle_err = app.clone();
-    let project_id_err = project_id.clone();
-    let project_name_err = project_name.clone();
-    let command_label_err = command_label.clone();
-    let cmd_id_err = cmd_id.clone();
-    std::thread::spawn(move || {
-        stream_terminal_output(stderr, |data| {
-            let payload = TerminalOutputPayload {
-                project_id: project_id_err.clone(),
-                command_id: cmd_id_err.clone(),
-                project_name: project_name_err.clone(),
-                command_label: command_label_err.clone(),
-                data,
-            };
-            let _ = app_handle_err.emit("terminal-out", payload);
-        });
-    });
-
-    let app_handle_wait = app.clone();
-    let manager_wait = state.inner().clone();
-    let project_id_wait = project_id.clone();
-    let project_name_wait = project_name.clone();
-    let command_label_wait = command_label.clone();
-    let cmd_id_wait = cmd_id.clone();
-    std::thread::spawn(move || {
-        let exit_code = child.wait().ok().and_then(|status| status.code());
-        manager_wait.remove_stdin(pid);
-        let payload = CommandStatusPayload {
-            project_id: project_id_wait,
-            command_id: cmd_id_wait,
-            project_name: project_name_wait,
-            command_label: command_label_wait,
-            pid,
-            status: "exited".to_string(),
-            exit_code,
-        };
-        let _ = app_handle_wait.emit("command-status", payload);
-    });
-
-    Ok(pid)
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.spawn(
+            app,
+            path,
+            Some(cmd),
+            Output::Command {
+                project_id,
+                command_id: cmd_id,
+                project_name,
+                command_label,
+            },
+            24,
+            80,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn send_input(state: tauri::State<ProcessManager>, pid: u32, data: String) -> Result<(), String> {
-    let mut map = state.stdinmap.lock().unwrap();
-    if let Some(stdin) = map.get_mut(&pid) {
-        stdin.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-        stdin.flush().map_err(|e| e.to_string())?;
-        Ok(())
-    } else {
-        Err(format!("No process found with pid {}", pid))
-    }
+async fn send_input(
+    state: tauri::State<'_, ProcessManager>,
+    pid: u32,
+    data: String,
+) -> Result<(), String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.input(pid, data))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn create_shell_session(
-    app: tauri::AppHandle,
+fn resize_session(
     state: tauri::State<ProcessManager>,
+    pid: u32,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    state.resize(pid, rows, cols)
+}
+
+#[tauri::command]
+async fn create_shell_session(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ProcessManager>,
     session_id: String,
     working_dir: String,
-    project_name: Option<String>,
+    rows: u16,
+    cols: u16,
 ) -> Result<u32, String> {
-    let _ = project_name;
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = Command::new("cmd.exe");
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x08000200);
-        c.args(["/d", "/q", "/k", "chcp 65001>nul"]);
-        c.env("PYTHONUTF8", "1");
-        c.env("PYTHONIOENCODING", "utf-8");
-        c
-    };
-
-    #[cfg(not(target_os = "windows"))]
-    let mut cmd = {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        Command::new(shell)
-    };
-
-    cmd.current_dir(&working_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    let pid = child.id();
-
-    if let Some(stdin) = child.stdin.take() {
-        state.insert_stdin(pid, stdin);
-    }
-
-    if let Some(stdout) = child.stdout.take() {
-        let app_out = app.clone();
-        let sid_out = session_id.clone();
-        std::thread::spawn(move || {
-            stream_terminal_output(stdout, |data| {
-                let _ = app_out.emit(&format!("shell-out-{}", sid_out), data);
-            });
-        });
-    }
-
-    if let Some(stderr) = child.stderr.take() {
-        let app_err = app.clone();
-        let sid_err = session_id.clone();
-        std::thread::spawn(move || {
-            stream_terminal_output(stderr, |data| {
-                let _ = app_err.emit(&format!("shell-out-{}", sid_err), data);
-            });
-        });
-    }
-
-    let manager_wait = state.inner().clone();
-    std::thread::spawn(move || {
-        let _ = child.wait();
-        manager_wait.remove_stdin(pid);
-    });
-
-    Ok(pid)
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PortTerminationPayload {
-    port: u16,
-    killed_pids: Vec<u32>,
-}
-
-#[cfg(target_os = "windows")]
-fn run_hidden_command(program: &str, args: &[&str]) -> Result<std::process::Output, String> {
-    use std::os::windows::process::CommandExt;
-
-    Command::new(program)
-        .creation_flags(0x08000000)
-        .args(args)
-        .output()
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn windows_process_exists(pid: u32) -> Result<bool, String> {
-    let filter = format!("PID eq {}", pid);
-    let output = run_hidden_command("tasklist", &["/FI", &filter, "/FO", "CSV", "/NH"])?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-
-    let pid_text = pid.to_string();
-    Ok(String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-        line.split(',')
-            .nth(1)
-            .map(|value| value.trim().trim_matches('"') == pid_text)
-            .unwrap_or(false)
-    }))
-}
-
-#[cfg(target_os = "windows")]
-fn terminate_process_tree(pid: u32) -> Result<(), String> {
-    let mut last_error = String::new();
-
-    for _ in 0..3 {
-        if !windows_process_exists(pid)? {
-            return Ok(());
-        }
-
-        let pid_text = pid.to_string();
-        let output = run_hidden_command("taskkill", &["/F", "/T", "/PID", &pid_text])?;
-        if !output.status.success() {
-            last_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if last_error.is_empty() {
-                last_error = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            }
-        }
-
-        for _ in 0..5 {
-            thread::sleep(Duration::from_millis(60));
-            if !windows_process_exists(pid)? {
-                return Ok(());
-            }
-        }
-    }
-
-    Err(if last_error.is_empty() {
-        format!("进程树 {} 在多次终止后仍然存在。", pid)
-    } else {
-        format!("终止进程树 {} 失败：{}", pid, last_error)
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.spawn(
+            app,
+            working_dir,
+            None,
+            Output::Shell(session_id),
+            rows,
+            cols,
+        )
     })
-}
-
-#[cfg(not(target_os = "windows"))]
-fn terminate_process_tree(pid: u32) -> Result<(), String> {
-    let pid_text = pid.to_string();
-    let _ = Command::new("pkill").args(["-KILL", "-P", &pid_text]).output();
-    let output = Command::new("kill")
-        .args(["-KILL", &pid_text])
-        .output()
-        .map_err(|error| error.to_string())?;
-
-    if output.status.success() || String::from_utf8_lossy(&output.stderr).contains("No such process") {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn endpoint_port(endpoint: &str) -> Option<u16> {
-    endpoint.rsplit_once(':')?.1.parse().ok()
-}
-
-#[cfg(target_os = "windows")]
-fn process_ids_for_port(port: u16) -> Result<Vec<u32>, String> {
-    let output = run_hidden_command("netstat", &["-ano"])?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-
-    let mut process_ids = BTreeSet::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let columns = line.split_whitespace().collect::<Vec<_>>();
-        let protocol = columns.first().map(|value| value.to_ascii_uppercase());
-        let is_tcp_listener = protocol.as_deref() == Some("TCP")
-            && columns.len() >= 5
-            && columns.get(3).map(|state| state.eq_ignore_ascii_case("LISTENING")) == Some(true);
-        let is_udp_socket = protocol.as_deref() == Some("UDP") && columns.len() >= 4;
-
-        if !(is_tcp_listener || is_udp_socket)
-            || columns.get(1).and_then(|endpoint| endpoint_port(endpoint)) != Some(port)
-        {
-            continue;
-        }
-
-        if let Some(pid) = columns.last().and_then(|value| value.parse::<u32>().ok()) {
-            if pid > 0 {
-                process_ids.insert(pid);
-            }
-        }
-    }
-
-    Ok(process_ids.into_iter().collect())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn process_ids_for_port(port: u16) -> Result<Vec<u32>, String> {
-    let port_filter = format!(":{}", port);
-    let output = Command::new("lsof")
-        .args(["-nP", "-t", "-i", &port_filter])
-        .output()
-        .map_err(|error| format!("无法执行 lsof：{}", error))?;
-
-    if !output.status.success() && output.stdout.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| line.trim().parse::<u32>().ok())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect())
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn kill_command(state: tauri::State<ProcessManager>, pid: u32) -> Result<(), String> {
-    terminate_process_tree(pid)?;
-    state.remove_stdin(pid);
-    Ok(())
-}
-
-#[tauri::command]
-fn terminate_port(port: u16) -> Result<PortTerminationPayload, String> {
-    let process_ids = process_ids_for_port(port)?;
-    let mut killed_pids = Vec::new();
-
-    for pid in process_ids {
-        terminate_process_tree(pid)?;
-        killed_pids.push(pid);
-    }
-
-    Ok(PortTerminationPayload { port, killed_pids })
+async fn kill_command(state: tauri::State<'_, ProcessManager>, pid: u32) -> Result<(), String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.stop(pid))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn editor_command_candidates(editor_key: &str) -> Vec<&str> {
@@ -644,7 +339,10 @@ fn editor_registry_executables(editor_key: &str) -> Vec<&'static str> {
 fn editor_install_path_suffixes(editor_key: &str) -> Vec<&'static str> {
     match editor_key {
         "codebuddy" => vec![r"CodeBuddy\CodeBuddy.exe", r"CodeBuddy CN\CodeBuddy CN.exe"],
-        "antigravity" => vec![r"Antigravity\Antigravity.exe", r"Antigravity\bin\antigravity.cmd"],
+        "antigravity" => vec![
+            r"Antigravity\Antigravity.exe",
+            r"Antigravity\bin\antigravity.cmd",
+        ],
         "code" => vec![r"Microsoft VS Code\Code.exe"],
         "cursor" => vec![r"Cursor\Cursor.exe"],
         "zed" => vec![r"Zed\Zed.exe"],
@@ -674,7 +372,9 @@ fn push_unique_candidate(candidates: &mut Vec<String>, candidate: impl Into<Stri
 #[cfg(target_os = "windows")]
 fn windows_registry_app_path_candidates(editor_key: &str) -> Vec<String> {
     use winreg::{
-        enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY},
+        enums::{
+            HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+        },
         RegKey,
     };
 
@@ -685,8 +385,15 @@ fn windows_registry_app_path_candidates(editor_key: &str) -> Vec<String> {
         return candidates;
     }
 
-    let hives = [RegKey::predef(HKEY_CURRENT_USER), RegKey::predef(HKEY_LOCAL_MACHINE)];
-    let registry_views = [KEY_READ, KEY_READ | KEY_WOW64_64KEY, KEY_READ | KEY_WOW64_32KEY];
+    let hives = [
+        RegKey::predef(HKEY_CURRENT_USER),
+        RegKey::predef(HKEY_LOCAL_MACHINE),
+    ];
+    let registry_views = [
+        KEY_READ,
+        KEY_READ | KEY_WOW64_64KEY,
+        KEY_READ | KEY_WOW64_32KEY,
+    ];
 
     for hive in hives {
         for view in registry_views {
@@ -738,7 +445,11 @@ fn extract_windows_path_candidate(raw_value: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn push_windows_registry_value_candidates(candidates: &mut Vec<String>, raw_value: &str, suffixes: &[&str]) {
+fn push_windows_registry_value_candidates(
+    candidates: &mut Vec<String>,
+    raw_value: &str,
+    suffixes: &[&str],
+) {
     let Some(value) = extract_windows_path_candidate(raw_value) else {
         return;
     };
@@ -762,7 +473,9 @@ fn push_windows_registry_value_candidates(candidates: &mut Vec<String>, raw_valu
 #[cfg(target_os = "windows")]
 fn windows_registry_uninstall_candidates(editor_key: &str) -> Vec<String> {
     use winreg::{
-        enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY},
+        enums::{
+            HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+        },
         RegKey,
     };
 
@@ -777,8 +490,15 @@ fn windows_registry_uninstall_candidates(editor_key: &str) -> Vec<String> {
         return candidates;
     }
 
-    let hives = [RegKey::predef(HKEY_CURRENT_USER), RegKey::predef(HKEY_LOCAL_MACHINE)];
-    let registry_views = [KEY_READ, KEY_READ | KEY_WOW64_64KEY, KEY_READ | KEY_WOW64_32KEY];
+    let hives = [
+        RegKey::predef(HKEY_CURRENT_USER),
+        RegKey::predef(HKEY_LOCAL_MACHINE),
+    ];
+    let registry_views = [
+        KEY_READ,
+        KEY_READ | KEY_WOW64_64KEY,
+        KEY_READ | KEY_WOW64_32KEY,
+    ];
     let uninstall_key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
     let value_names = ["DisplayIcon", "InstallLocation", "Inno Setup: App Path"];
 
@@ -841,7 +561,10 @@ fn windows_common_install_candidates(editor_key: &str) -> Vec<String> {
 
     for root in windows_common_install_roots() {
         for suffix in &suffixes {
-            push_unique_candidate(&mut candidates, root.join(suffix).to_string_lossy().into_owned());
+            push_unique_candidate(
+                &mut candidates,
+                root.join(suffix).to_string_lossy().into_owned(),
+            );
         }
     }
 
@@ -872,7 +595,10 @@ fn windows_editor_launch_candidates(editor_key: &str) -> Vec<String> {
 }
 
 #[tauri::command]
-fn enter_compact_mode(window: Window, compact_width: f64) -> Result<CompactWindowLayoutPayload, String> {
+fn enter_compact_mode(
+    window: Window,
+    compact_width: f64,
+) -> Result<CompactWindowLayoutPayload, String> {
     let was_maximized = window.is_maximized().map_err(|e| e.to_string())?;
     let outer_position = window.outer_position().map_err(|e| e.to_string())?;
     let outer_size = window.outer_size().map_err(|e| e.to_string())?;
@@ -893,18 +619,24 @@ fn enter_compact_mode(window: Window, compact_width: f64) -> Result<CompactWindo
     let compact_width_physical = (compact_width * scale_factor).round() as i32;
     let max_visible_x = work_area.position.x + work_area.size.width as i32 - compact_width_physical;
     // 精简模式：吸顶到工作区顶部，水平位置保持在当前显示器内
-    let compact_x = outer_position
-        .x
-        .clamp(work_area.position.x, max_visible_x.max(work_area.position.x));
+    let compact_x = outer_position.x.clamp(
+        work_area.position.x,
+        max_visible_x.max(work_area.position.x),
+    );
     let compact_y = work_area.position.y;
 
     // 先置顶、再移动位置、最后缩放尺寸，避免在 Windows 上出现窗口先在旧位置缩小的视觉闪烁
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     window
-        .set_position(Position::Physical(PhysicalPosition::new(compact_x, compact_y)))
+        .set_position(Position::Physical(PhysicalPosition::new(
+            compact_x, compact_y,
+        )))
         .map_err(|e| e.to_string())?;
     window
-        .set_size(Size::Logical(LogicalSize::new(compact_width, compact_height_logical)))
+        .set_size(Size::Logical(LogicalSize::new(
+            compact_width,
+            compact_height_logical,
+        )))
         .map_err(|e| e.to_string())?;
 
     let layout = CompactWindowLayoutPayload {
@@ -932,13 +664,19 @@ fn exit_compact_mode(window: Window, layout: CompactWindowLayoutPayload) -> Resu
 
     if let Some(previous_size) = layout.previous_size {
         window
-            .set_size(Size::Physical(PhysicalSize::new(previous_size.width, previous_size.height)))
+            .set_size(Size::Physical(PhysicalSize::new(
+                previous_size.width,
+                previous_size.height,
+            )))
             .map_err(|e| e.to_string())?;
     }
 
     if let Some(previous_position) = layout.previous_position {
         window
-            .set_position(Position::Physical(PhysicalPosition::new(previous_position.x, previous_position.y)))
+            .set_position(Position::Physical(PhysicalPosition::new(
+                previous_position.x,
+                previous_position.y,
+            )))
             .map_err(|e| e.to_string())?;
     }
 
@@ -1041,7 +779,12 @@ fn open_in_editor(path: String, editor_key: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(ProcessManager::new())
+        .manage(ProcessManager::default())
+        .setup(|app| {
+            let path = config_file_path().map_err(std::io::Error::other)?;
+            app.manage(config::ConfigFile::new(path));
+            Ok(())
+        })
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -1055,14 +798,24 @@ pub fn run() {
             save_app_config,
             run_command,
             send_input,
+            resize_session,
             create_shell_session,
             kill_command,
-            terminate_port,
+            ports::terminate_port,
+            ports::inspect_port,
             enter_compact_mode,
             exit_compact_mode,
             get_cursor_position,
             open_in_editor,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                app.state::<ProcessManager>().shutdown();
+            }
+        });
 }

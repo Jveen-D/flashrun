@@ -1,203 +1,80 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
-import { listen } from '@tauri-apps/api/event';
+import { WebLinksAddon } from 'xterm-addon-web-links';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { TERMINAL_FIT_EVENT, getCommandOutput } from './utils/terminal';
+import { ensureShellSession } from './utils/shellSessions';
+import { sendSessionInput } from './utils/sessionInput';
 import 'xterm/css/xterm.css';
-import { WebLinksAddon } from 'xterm-addon-web-links';
-import {
-  TERMINAL_FIT_EVENT,
-  subscribeTerminalOutput,
-} from './utils/terminal';
 
-interface TerminalWindowProps {
-  className?: string;
-  workingDir?: string;
-  sessionId?: string;
-  projectId?: string | null;
-  projectName?: string | null;
-  active?: boolean;
+interface Props {
+  className?: string; workingDir: string; sessionId?: string; projectId: string;
+  commandId?: string; pid?: number | null; active: boolean;
 }
-
-const TerminalWindow: React.FC<TerminalWindowProps> = ({
-  className = '',
-  workingDir,
-  sessionId,
-  projectId,
-  projectName,
-  active = false,
-}) => {
-
-  const resolvedDir = workingDir ?? '.';
-  const terminalRef = useRef<HTMLDivElement>(null);
+export default function TerminalWindow({ className = '', workingDir, sessionId, projectId, commandId, pid, active }: Props) {
+  const container = useRef<HTMLDivElement>(null);
+  const pidRef = useRef(pid);
   const termRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
-  const shellPidRef = useRef<number | null>(null);
-
+  const fitRef = useRef<(() => void) | null>(null);
+  const activeRef = useRef(active);
+  pidRef.current = pid;
+  activeRef.current = active;
   useEffect(() => {
-    if (!terminalRef.current) {
-      return;
-    }
-
+    if (!container.current) return;
+    let disposed = false;
+    let frame = 0;
     const term = new Terminal({
-      theme: {
-        background: 'transparent',
-        foreground: '#d7dee9',
-        cursor: '#60a5fa',
-        cursorAccent: '#1e293b',
-      },
-      fontFamily: '"Cascadia Mono", Consolas, "Segoe UI Symbol", "Microsoft YaHei UI", "Courier New", monospace',
-      fontSize: 12,
-      lineHeight: 1.45,
-      convertEol: true,
-
-      allowTransparency: true,
-      cursorBlink: true,
-      scrollback: 5000,
-      disableStdin: false,
+      theme: { background: '#0B1120', foreground: '#d7dee9', cursor: '#60a5fa' },
+      fontFamily: '"Cascadia Mono", Consolas, monospace', fontSize: 12, lineHeight: 1.45,
+      scrollback: 3000, cursorBlink: true,
     });
-
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-
-    const webLinksAddon = new WebLinksAddon((event: MouseEvent, uri: string) => {
-      if (event.ctrlKey || event.metaKey) {
-        openUrl(uri).catch(console.error);
-      }
-    });
-    term.loadAddon(webLinksAddon);
-
-    term.open(terminalRef.current);
-    const fitTerminal = () => {
-      requestAnimationFrame(() => fitAddonRef.current?.fit());
-    };
-
-    fitAddon.fit();
-
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon((event, uri) => {
+      if ((event.ctrlKey || event.metaKey) && /^https?:\/\//i.test(uri)) void openUrl(uri).catch(console.error);
+    }));
+    term.open(container.current);
     termRef.current = term;
-
-    fitAddonRef.current = fitAddon;
-
-    let shellPid: number | null = null;
-
-    invoke<number>('create_shell_session', {
-      sessionId: sessionId ?? 'default',
-      workingDir: resolvedDir,
-      projectName: projectName ?? null,
-    }).then((pid) => {
-      shellPid = pid;
-      shellPidRef.current = pid;
-      term.writeln('\x1b[34m[FlashRun]\x1b[0m Shell ready. Type commands below.\r');
-    }).catch((error) => {
-      term.writeln(`\x1b[31m[FlashRun] Shell init failed: ${error}\x1b[0m\r`);
-    });
-
-    const shellUnlistenPromise = listen<string>(
-      `shell-out-${sessionId ?? 'default'}`,
-      (event) => {
-        termRef.current?.write(event.payload);
-      },
-    );
-
-    const unsubscribeCommandOutput = projectId
-      ? subscribeTerminalOutput(projectId, (data) => termRef.current?.write(data))
-      : () => {};
-
-    let inputBuf = '';
-
-    const dataDispose = term.onData((data) => {
-      const code = data.charCodeAt(0);
-
-      if (data === '\r') {
-        term.write('\r\n');
-        const line = inputBuf;
-        inputBuf = '';
-        if (shellPid != null && line.trim().length > 0) {
-          invoke('send_input', { pid: shellPid, data: `${line}\n` }).catch(console.warn);
-        }
-        return;
-      }
-
-      if (data === '\x7f' || data === '\b') {
-        if (inputBuf.length > 0) {
-          inputBuf = inputBuf.slice(0, -1);
-          term.write('\b \b');
-        }
-        return;
-      }
-
-      if (data === '\x03') {
-        if (shellPid != null) {
-          invoke('send_input', { pid: shellPid, data: '\x03' }).catch(console.warn);
-        }
-        term.write('^C\r\n');
-        inputBuf = '';
-        return;
-      }
-
-      if (data === '\x0c') {
-        term.clear();
-        inputBuf = '';
-        return;
-      }
-
-      if (code < 0x20 && data !== '\t') {
-        return;
-      }
-
-      inputBuf += data;
-      term.write(data);
-    });
-
-    window.addEventListener('resize', fitTerminal);
-    window.addEventListener(TERMINAL_FIT_EVENT, fitTerminal as EventListener);
-
-    const observer = new ResizeObserver(() => {
-      fitTerminal();
-    });
-    observer.observe(terminalRef.current);
-
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', fitTerminal);
-      window.removeEventListener(TERMINAL_FIT_EVENT, fitTerminal as EventListener);
-      dataDispose.dispose();
-      shellUnlistenPromise.then((unlisten) => unlisten());
-      unsubscribeCommandOutput();
-      if (shellPid != null) {
-        invoke('kill_command', { pid: shellPid }).catch(() => {});
-      }
-      term.dispose();
-    };
-  }, [projectId, projectName, resolvedDir, sessionId]);
-
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      window.requestAnimationFrame(() => {
-        fitAddonRef.current?.fit();
-        termRef.current?.focus();
-        window.requestAnimationFrame(() => fitAddonRef.current?.fit());
+    const shell = commandId ? undefined : ensureShellSession(sessionId!, workingDir, term.rows, term.cols);
+    const output = commandId ? getCommandOutput(projectId, commandId) : shell!.output;
+    const targetPid = () => commandId ? pidRef.current : shell?.pid;
+    const fitTerminal = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (disposed || !activeRef.current || !container.current?.clientHeight) return;
+        fit.fit();
+        const target = targetPid();
+        if (target != null) void invoke('resize_session', { pid: target, rows: term.rows, cols: term.cols }).catch(console.warn);
       });
-    }, 0);
-
-    return () => window.clearTimeout(timer);
-  }, [active]);
-
-  return (
-    <div
-      className={`flex h-full w-full flex-col overflow-hidden ${className}`}
-      onMouseDown={() => termRef.current?.focus()}
-    >
-      <div className="flex-1 overflow-hidden bg-[#fbfcfe] p-0 dark:bg-[#0B1120]">
-        <div ref={terminalRef} className="h-full w-full" />
-      </div>
-    </div>
-  );
-};
-
-export default TerminalWindow;
+    };
+    fitRef.current = fitTerminal;
+    void shell?.ready.then(() => { if (!disposed) fitTerminal(); });
+    // PTY handles echo, passwords, history and control characters.
+    const input = term.onData((data) => {
+      const target = targetPid();
+      if (target != null) void sendSessionInput(target, data).catch(console.warn);
+    });
+    const unsubscribe = output.subscribe((data) => { if (!disposed) term.write(data); });
+    const observer = new ResizeObserver(fitTerminal);
+    observer.observe(container.current);
+    window.addEventListener(TERMINAL_FIT_EVENT, fitTerminal);
+    fitTerminal();
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener(TERMINAL_FIT_EVENT, fitTerminal);
+      unsubscribe();
+      input.dispose();
+      term.dispose();
+      termRef.current = null;
+      fitRef.current = null;
+    };
+  }, [commandId, projectId, sessionId, workingDir]);
+  useEffect(() => { if (active) { fitRef.current?.(); termRef.current?.focus(); } }, [active, pid]);
+  return <div className={`h-full w-full bg-[#0B1120] p-1 ${className}`} onMouseDown={() => termRef.current?.focus()}>
+    <div ref={container} className="h-full w-full" />
+  </div>;
+}

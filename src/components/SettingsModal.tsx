@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { CustomSelect } from './CustomSelect';
-import { useStore } from '../store';
+import { useStore, type GlobalSettings } from '../store';
 import { EDITOR_LABEL_MAP, EDITOR_OPTIONS } from '../utils/editors';
 import {
   createShortcutFromKeyboardEvent,
@@ -105,7 +105,7 @@ export function SettingsModal({ open, onClose, onToggleCompactMode }: SettingsMo
                   <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">{t('主题')}</label>
                   <CustomSelect
                     value={globalSettings.theme}
-                    onChange={(value) => updateGlobalSettings({ theme: value as any })}
+                    onChange={(value) => updateGlobalSettings({ theme: value as GlobalSettings['theme'] })}
                     options={[
                       { label: t('跟随系统'), value: 'system' },
                       { label: t('浅色模式'), value: 'light' },
@@ -119,7 +119,7 @@ export function SettingsModal({ open, onClose, onToggleCompactMode }: SettingsMo
                   <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">{t('语言')}</label>
                   <CustomSelect
                     value={globalSettings.language}
-                    onChange={(value) => updateGlobalSettings({ language: value as any })}
+                    onChange={(value) => updateGlobalSettings({ language: value as GlobalSettings['language'] })}
                     options={[
                       { label: '中文', value: 'zh' },
                       { label: 'English', value: 'en' },
@@ -140,7 +140,7 @@ export function SettingsModal({ open, onClose, onToggleCompactMode }: SettingsMo
               <p className="text-sm text-slate-500 dark:text-slate-400 mb-5">{t('当在 TopBar 点击“打开”时，系统将通过此关联唤起对应应用解析该项目目录。')}</p>
               <CustomSelect
                 value={globalSettings.defaultEditor}
-                onChange={(value) => updateGlobalSettings({ defaultEditor: value as any })}
+                onChange={(value) => updateGlobalSettings({ defaultEditor: value as GlobalSettings['defaultEditor'] })}
                 options={EDITOR_OPTIONS.map((option) => ({
                   ...option,
                   label: `${option.label}${option.value === globalSettings.defaultEditor ? ` · ${t('当前默认')}` : ''}`,
