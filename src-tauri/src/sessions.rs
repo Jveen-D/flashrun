@@ -27,7 +27,7 @@ pub enum Output {
 struct Session {
     child: Mutex<Box<dyn Child + Send + Sync>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     tree: ProcessTree,
 }
 
@@ -37,6 +37,58 @@ impl Drop for Session {
         if let Ok(child) = self.child.get_mut() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+    }
+}
+
+// ConPTY inherits the cursor through a DSR exchange, even without a visible UI.
+// Consume only that initial query: later application queries belong to xterm.
+#[cfg(any(windows, test))]
+struct StartupReader<R, W> {
+    reader: R,
+    writer: W,
+    pending: Vec<u8>,
+    complete: bool,
+}
+
+#[cfg(any(windows, test))]
+impl<R: std::io::Read, W: FnMut() -> std::io::Result<()>> std::io::Read for StartupReader<R, W> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if !self.complete {
+                if let Some(index) = self.pending.windows(4).position(|s| s == b"\x1b[6n") {
+                    (self.writer)()?;
+                    self.pending.drain(index..index + 4);
+                    self.complete = true;
+                }
+            }
+            let retained = if self.complete {
+                0
+            } else {
+                (1..=3)
+                    .rev()
+                    .find(|&n| self.pending.ends_with(&b"\x1b[6n"[..n]))
+                    .unwrap_or(0)
+            };
+            let count = output.len().min(self.pending.len() - retained);
+            if count > 0 {
+                output[..count].copy_from_slice(&self.pending[..count]);
+                self.pending.drain(..count);
+                return Ok(count);
+            }
+            let mut buffer = [0; 8192];
+            let count = self.reader.read(&mut buffer)?;
+            if count == 0 {
+                self.complete = true;
+                if self.pending.is_empty() {
+                    return Ok(0);
+                }
+            } else {
+                self.pending.extend_from_slice(&buffer[..count]);
+            }
         }
     }
 }
@@ -122,8 +174,9 @@ exit $child.ExitCode"#;
     builder.cwd(path);
     builder.env("TERM", "xterm-256color");
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    #[allow(unused_mut)]
-    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let writer = Arc::new(Mutex::new(
+        pair.master.take_writer().map_err(|e| e.to_string())?,
+    ));
     let mut child = pair
         .slave
         .spawn_command(builder)
@@ -142,18 +195,30 @@ exit $child.ExitCode"#;
         }
     };
     #[cfg(windows)]
-    if let Err(error) = writer.write_all(b"ready\r") {
-        let _ = tree.stop();
-        let _ = child.wait();
-        return Err(error.to_string());
-    }
+    let reader: Box<dyn std::io::Read + Send> = {
+        let writer = writer.clone();
+        Box::new(StartupReader {
+            reader,
+            writer: move || {
+                let mut writer = writer
+                    .lock()
+                    .map_err(|_| std::io::Error::other("PTY writer poisoned"))?;
+                // Job assignment is already complete. Release the command barrier
+                // only after ConPTY can process input; early input may be lost.
+                writer.write_all(b"\x1b[1;1Rready\r")?;
+                writer.flush()
+            },
+            pending: Vec::new(),
+            complete: false,
+        })
+    };
     drop(pair.slave);
 
     Ok((
         Session {
             child: Mutex::new(child),
             master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
+            writer,
             tree,
         },
         reader,
@@ -474,6 +539,168 @@ impl ProcessTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn startup_query_is_answered_once_across_every_chunk_boundary() {
+        // The second query belongs to the application and must reach its UI.
+        let input = b"before\x1b[6nafter\x1b[6n";
+        for chunk_size in 1..=input.len() {
+            struct Chunks<'a>(&'a [u8], usize);
+            impl Read for Chunks<'_> {
+                fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                    let count = out.len().min(self.1).min(self.0.len());
+                    out[..count].copy_from_slice(&self.0[..count]);
+                    self.0 = &self.0[count..];
+                    Ok(count)
+                }
+            }
+            let mut replies = 0;
+            let mut reader = StartupReader {
+                reader: Chunks(input, chunk_size),
+                writer: || {
+                    replies += 1;
+                    Ok(())
+                },
+                pending: Vec::new(),
+                complete: false,
+            };
+            let mut output = Vec::new();
+            // Tiny destination buffers also exercise draining pending output.
+            let mut byte = [0];
+            while reader.read(&mut byte).unwrap() != 0 {
+                output.extend_from_slice(&byte);
+            }
+            assert_eq!(output, b"beforeafter\x1b[6n");
+            assert_eq!(replies, 1);
+        }
+    }
+
+    #[test]
+    fn startup_reader_preserves_incomplete_sequences_at_eof_and_reports_write_errors() {
+        let mut reader = StartupReader {
+            reader: &b"text\x1b[6"[..],
+            writer: || panic!("incomplete query must not be answered"),
+            pending: Vec::new(),
+            complete: false,
+        };
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).unwrap();
+        assert_eq!(output, b"text\x1b[6");
+        let mut reader = StartupReader {
+            reader: &b"\x1b[6n"[..],
+            writer: || Err(std::io::ErrorKind::BrokenPipe.into()),
+            pending: Vec::new(),
+            complete: false,
+        };
+        assert_eq!(
+            reader.read(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_hidden_sessions_start_without_frontend_and_shutdown() {
+        let workers: Vec<_> = (0..3)
+            .map(|_| {
+                thread::spawn(|| {
+                    let directory = tempfile::tempdir().unwrap();
+                    std::fs::write(
+                        directory.path().join("ready.cjs"),
+                        "require('fs').writeFileSync('ready', 'yes'); setInterval(()=>{},1000);",
+                    )
+                    .unwrap();
+                    let (session, reader) = open_session(
+                        directory.path().to_string_lossy().into_owned(),
+                        Some("node ready.cjs".into()),
+                        24,
+                        80,
+                    )
+                    .unwrap();
+                    // No xterm, frontend subscriber, or simulated terminal responses.
+                    let (send, output) = std::sync::mpsc::channel();
+                    thread::spawn(move || {
+                        let mut reader = reader;
+                        let mut bytes = Vec::new();
+                        reader.read_to_end(&mut bytes).unwrap();
+                        let _ = send.send(bytes);
+                    });
+                    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                    while !directory.path().join("ready").exists() {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "hidden session did not start"
+                        );
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    let session = Arc::new(session);
+                    let manager = ProcessManager::default();
+                    manager
+                        .registry
+                        .lock()
+                        .unwrap()
+                        .sessions
+                        .insert(1, session.clone());
+                    manager.shutdown();
+                    assert!(session.child.lock().unwrap().try_wait().unwrap().is_some());
+                    drop(manager);
+                    drop(session);
+                    let bytes = output.recv_timeout(Duration::from_secs(5)).unwrap();
+                    assert!(!bytes.windows(4).any(|s| s == b"\x1b[6n"));
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hidden_interactive_shell_accepts_input_after_startup() {
+        let directory = tempfile::tempdir().unwrap();
+        let (session, reader) = open_session(
+            directory.path().to_string_lossy().into_owned(),
+            None,
+            24,
+            80,
+        )
+        .unwrap();
+        let (send, output) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            stream_terminal_output(reader, |data| {
+                let _ = send.send(data);
+            })
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut text = String::new();
+        while !text.contains('>') {
+            if let Ok(data) = output.recv_timeout(Duration::from_millis(100)) {
+                text.push_str(&data);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell prompt not ready: {text}"
+            );
+        }
+        session
+            .writer
+            .lock()
+            .unwrap()
+            .write_all(b"echo ready>shell.ready\r")
+            .unwrap();
+        while !directory.path().join("shell.ready").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell input was not executed"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        session.tree.stop().unwrap();
+        session.child.lock().unwrap().wait().unwrap();
+    }
+
     #[test]
     fn rejects_invalid_dimensions() {
         assert!(size(0, 80).is_err());
