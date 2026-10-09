@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Minus, Square, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { isMacPlatform } from '../utils/shortcuts';
+import { requestWindowClose } from '../utils/windowClose';
 
 export const WindowTitleBar: React.FC = () => {
   const { t } = useTranslation();
@@ -47,7 +48,7 @@ export const WindowTitleBar: React.FC = () => {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => void appWindow.close().catch(() => {})}
+          onClick={() => void requestWindowClose(appWindow)}
           className="group flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#ff5f57] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.14)] transition-transform hover:scale-105"
           title={t('关闭窗口')}
         >
@@ -102,7 +103,7 @@ export const WindowTitleBar: React.FC = () => {
 
       <button
         type="button"
-        onClick={() => void appWindow.close().catch(() => {})}
+        onClick={() => void requestWindowClose(appWindow)}
         className="flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-slate-500 transition-colors hover:border-rose-500 hover:bg-rose-500 hover:text-white dark:text-slate-400"
         title={t('关闭窗口')}
       >

@@ -714,6 +714,16 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_without_sessions_is_repeatable() {
+        let manager = ProcessManager::default();
+        manager.shutdown();
+        manager.shutdown();
+        assert!(manager.registry.lock().unwrap().closing);
+        assert!(manager.registry.lock().unwrap().sessions.is_empty());
+        assert!(manager.input(1, "x".into()).is_err());
+    }
+
+    #[test]
     fn pty_preserves_quoted_unicode_commands_and_reports_a_real_terminal() {
         let directory = tempfile::tempdir().unwrap();
         let command = r#"node -e "if (!process.stdin.isTTY || !process.stdout.isTTY) process.exit(7); process.stdout.write(JSON.stringify(['two words','中文']));""#;

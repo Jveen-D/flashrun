@@ -11,6 +11,7 @@ import { SettingsModal } from './components/SettingsModal';
 
 import { flushPersistence, retryPersistence, useStore } from './store';
 import { reconcileShellSessions } from './utils/shellSessions';
+import { guardWindowClose, requestWindowClose } from './utils/windowClose';
 import { useTranslation } from 'react-i18next';
 import { eventMatchesShortcut } from './utils/shortcuts';
 import {
@@ -117,21 +118,7 @@ function App() {
     pruneCommandOutput(new Set(projects.flatMap((project) => project.commands.map((command) => commandOutputKey(project.id, command.id)))));
   }, [hydrated, projectTerminals, projects]);
 
-  useEffect(() => {
-    let closing = false;
-    let disposed = false;
-    const subscription = appWindow.onCloseRequested(async (event) => {
-      if (closing) return;
-      event.preventDefault();
-      try {
-        await flushPersistence();
-        closing = true;
-        await appWindow.close();
-      } catch (error) { window.alert(String(error)); }
-    });
-    void subscription.then((unlisten) => { if (disposed) unlisten(); });
-    return () => { disposed = true; void subscription.then((unlisten) => unlisten()); };
-  }, [appWindow]);
+  useEffect(() => guardWindowClose(appWindow, flushPersistence), [appWindow]);
 
   useEffect(() => {
     if (!hydrated || !activeProjectId) return;
@@ -249,7 +236,7 @@ function App() {
         <p>配置读取失败，原文件未被覆盖。请修复配置或从备份恢复后重试。</p>
         <pre className="max-w-full whitespace-pre-wrap text-sm">{hydrationError}</pre>
         <button className="rounded bg-blue-600 px-4 py-2" onClick={() => void hydrate()}>重试读取</button>
-        <button onClick={() => void appWindow.close()}>退出</button>
+        <button onClick={() => void requestWindowClose(appWindow)}>退出</button>
       </div>}
       {persistenceError && <div role="alert" className="z-50 bg-amber-100 p-2 text-sm text-amber-950">
         配置未保存：{persistenceError}
