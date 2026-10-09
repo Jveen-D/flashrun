@@ -56,3 +56,20 @@ jobs:
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true # Set to true to let you review before publishing
           prerelease: false
+
+      - name: Retain Windows installer build inputs
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-inputs
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/nsis/**/*.nsi
+            src-tauri/target/release/wix/**/*.wxs
+            src-tauri/target/release/wix/**/*.wxl
+            src-tauri/installer/branding.nsh
+            src-tauri/installer/languages/*.nsh
+            src-tauri/installer/assets/*.bmp
+            src-tauri/icons/icon.ico
+            src-tauri/tauri.conf.json
