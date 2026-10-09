@@ -20,16 +20,12 @@ import { areProjectPathsEqual, useStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import { FolderKanban, GripVertical, PanelLeft, PanelLeftClose, Play, Plus, Settings, Square } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import logoUrl from '../assets/logo.jpg';
 import { useCommandRunner } from '../hooks/useCommandRunner';
 
 interface SidebarProps {
   onOpenSettings: () => void;
-  compactMode: boolean;
-  onToggleCompactMode: () => void;
-  onCompactDragStateChange?: (dragging: boolean) => void;
 }
 
 const COLLAPSED_SIDEBAR_WIDTH = 68;
@@ -89,7 +85,7 @@ function SortableProjectItem({ id, onClick, dragLabel, expanded, children }: Sor
   );
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, onToggleCompactMode, onCompactDragStateChange }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
   const {
     projects,
     activeProjectId,
@@ -104,11 +100,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
   const { runDefaultCommand, stopCommand } = useCommandRunner();
   const { t } = useTranslation();
   const asideRef = React.useRef<HTMLElement | null>(null);
-  const appWindow = React.useMemo(() => getCurrentWindow(), []);
   const [isResizing, setIsResizing] = React.useState(false);
   const [liveSidebarWidth, setLiveSidebarWidth] = React.useState(sidebarWidth);
-  const effectiveExpanded = compactMode || isSidebarExpanded;
-  const renderedSidebarWidth = `${effectiveExpanded ? liveSidebarWidth : COLLAPSED_SIDEBAR_WIDTH}px`;
+  const renderedSidebarWidth = `${isSidebarExpanded ? liveSidebarWidth : COLLAPSED_SIDEBAR_WIDTH}px`;
   const projectIds = React.useMemo(() => projects.map((project) => project.id), [projects]);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -138,7 +132,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
   }, [isResizing]);
 
   const handleResizeStart = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (compactMode || !effectiveExpanded) {
+    if (!isSidebarExpanded) {
       return;
     }
 
@@ -210,20 +204,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
     reorderProjects(arrayMove(projectIds, oldIndex, newIndex));
   };
 
-  const handleCompactDragStart = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!compactMode || event.button !== 0) {
-      return;
-    }
-
-    const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest('button')) {
-      return;
-    }
-
-    onCompactDragStateChange?.(true);
-    void appWindow.startDragging().catch(() => {});
-  };
-
   return (
     <aside
       ref={asideRef}
@@ -231,34 +211,33 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
       style={{ width: renderedSidebarWidth }}
     >
       <div
-        className={`mb-4 flex w-full items-center shrink-0 transition-all duration-300 ${compactMode ? 'cursor-move' : ''} ${effectiveExpanded ? 'justify-between px-4' : 'flex-col justify-center gap-3 px-0'}`}
-        onMouseDown={handleCompactDragStart}
+        className={`mb-4 flex w-full items-center shrink-0 transition-all duration-300 ${isSidebarExpanded ? 'justify-between px-4' : 'flex-col justify-center gap-3 px-0'}`}
       >
-        <div className={`flex items-center ${!effectiveExpanded && 'justify-center'}`}>
+        <div className={`flex items-center ${!isSidebarExpanded && 'justify-center'}`}>
           <img
             src={logoUrl}
             alt="Logo"
             className="h-8 w-8 shrink-0 rounded-lg border border-slate-200/80 object-cover shadow-sm dark:border-slate-700/60"
           />
-          <span className={`overflow-hidden whitespace-nowrap text-lg font-bold tracking-tight text-slate-800 transition-all duration-300 dark:text-white ${effectiveExpanded ? 'ml-2.5 w-auto opacity-100' : 'ml-0 w-0 opacity-0'}`}>
+          <span className={`overflow-hidden whitespace-nowrap text-lg font-bold tracking-tight text-slate-800 transition-all duration-300 dark:text-white ${isSidebarExpanded ? 'ml-2.5 w-auto opacity-100' : 'ml-0 w-0 opacity-0'}`}>
             {t('FlashRun')}
           </span>
         </div>
 
         <button
-          onClick={compactMode ? onToggleCompactMode : () => setSidebarExpanded(!isSidebarExpanded)}
+          onClick={() => setSidebarExpanded(!isSidebarExpanded)}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-slate-400 transition-colors hover:border-slate-300 hover:bg-white hover:text-slate-700 dark:text-slate-500 dark:hover:border-slate-700 dark:hover:bg-slate-900 dark:hover:text-white"
-          title={compactMode ? t('退出精简模式') : effectiveExpanded ? t('收起侧边栏') : t('展开侧边栏')}
+          title={isSidebarExpanded ? t('收起侧边栏') : t('展开侧边栏')}
         >
-          {compactMode ? <PanelLeft size={18} /> : effectiveExpanded ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
+          {isSidebarExpanded ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
         </button>
       </div>
 
-      <div className={`mb-3 shrink-0 transition-all duration-300 ${effectiveExpanded ? 'px-4' : 'px-3'}`}>
+      <div className={`mb-3 shrink-0 transition-all duration-300 ${isSidebarExpanded ? 'px-4' : 'px-3'}`}>
         <div className="h-px w-full rounded-full bg-slate-200/90 dark:bg-slate-800/90" />
       </div>
 
-      <div className={`flex w-full flex-1 flex-col space-y-1.5 overflow-y-auto no-scrollbar pb-4 transition-all duration-300 ${effectiveExpanded ? 'px-3' : 'items-center px-2'}`}>
+      <div className={`flex w-full flex-1 flex-col space-y-1.5 overflow-y-auto no-scrollbar pb-4 transition-all duration-300 ${isSidebarExpanded ? 'px-3' : 'items-center px-2'}`}>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleProjectDragEnd}>
           <SortableContext items={projectIds} strategy={verticalListSortingStrategy}>
           {projects.map((project) => {
@@ -291,7 +270,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
               id={project.id}
               onClick={() => setActiveProject(project.id)}
               dragLabel={t('拖拽排序')}
-              expanded={effectiveExpanded}
+              expanded={isSidebarExpanded}
             >
               <div className={`absolute -left-2 top-1/2 z-10 w-1 -translate-y-1/2 rounded-r-md transition-all duration-300 ${
                 isActive
@@ -303,7 +282,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
                     : 'h-0 bg-blue-500/70 opacity-60 group-hover:h-4'
               }`} />
 
-              <div className={`flex w-full items-center rounded-xl border transition-all duration-200 ${effectiveExpanded ? 'p-2' : 'justify-center p-1'} ${
+              <div className={`flex w-full items-center rounded-xl border transition-all duration-200 ${isSidebarExpanded ? 'p-2' : 'justify-center p-1'} ${
                 isActive
                   ? isRunning
                     ? 'border-emerald-200/80 bg-emerald-50/80 shadow-sm dark:border-emerald-500/20 dark:bg-emerald-500/10'
@@ -313,7 +292,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
                     : 'border-transparent bg-transparent hover:border-slate-200/80 hover:bg-white/70 dark:hover:border-slate-700/60 dark:hover:bg-slate-900/60'
               }`}>
                 <div
-                  className={`relative flex shrink-0 items-center justify-center transition-all duration-200 ${effectiveExpanded ? 'h-9 w-9' : 'h-10 w-10'} ${
+                  className={`relative flex shrink-0 items-center justify-center transition-all duration-200 ${isSidebarExpanded ? 'h-9 w-9' : 'h-10 w-10'} ${
                     isActive
                       ? 'rounded-lg bg-blue-600 text-white shadow-sm dark:bg-blue-500'
                       : isRunning
@@ -321,9 +300,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
                         : 'rounded-lg bg-slate-200/90 text-slate-500 group-hover:bg-white group-hover:text-blue-500 dark:bg-slate-800/90 dark:text-slate-400 dark:group-hover:bg-slate-800 dark:group-hover:text-blue-400'
                   }`}
                 >
-                  <FolderKanban size={effectiveExpanded ? 18 : 20} strokeWidth={isActive ? 2.4 : 2} />
+                  <FolderKanban size={isSidebarExpanded ? 18 : 20} strokeWidth={isActive ? 2.4 : 2} />
 
-                  {!effectiveExpanded && defaultCommand && (
+                  {!isSidebarExpanded && defaultCommand && (
                     <button
                       type="button"
                       onClick={handleDefaultAction}
@@ -347,7 +326,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
                 </div>
 
                 <div className={`min-w-0 flex-col justify-center overflow-hidden transition-all duration-300 ${
-                  effectiveExpanded ? 'ml-3 flex flex-1 opacity-100' : 'ml-0 w-0 opacity-0'
+                  isSidebarExpanded ? 'ml-3 flex flex-1 opacity-100' : 'ml-0 w-0 opacity-0'
                 }`}>
                   <div
                     className={`break-words whitespace-normal text-sm font-semibold leading-5 transition-colors ${
@@ -367,7 +346,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
                   </div>
                 </div>
 
-                {effectiveExpanded && defaultCommand && (
+                {isSidebarExpanded && defaultCommand && (
                   <button
                     type="button"
                     onClick={handleDefaultAction}
@@ -383,7 +362,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
                 )}
               </div>
 
-              {!effectiveExpanded && (
+              {!isSidebarExpanded && (
                 <div className="pointer-events-none absolute left-[60px] top-1/2 z-50 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-all origin-left scale-95 group-hover:scale-100 group-hover:opacity-100 dark:border-slate-800 dark:bg-black/95">
                   {project.name}
                   {defaultCommand ? ` · ${isDefaultRunning ? t('默认启动运行中') : t('可一键运行默认启动')}` : ''}
@@ -398,31 +377,31 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, compactMode, o
         <div className="relative mt-2 flex w-full justify-center pt-2">
           <button
             onClick={handleAddProject}
-            className={`group flex w-full items-center rounded-xl border border-dashed border-slate-300 bg-slate-50/80 text-emerald-600 transition-all duration-300 hover:border-emerald-400 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-800/25 dark:text-emerald-500 dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/10 ${effectiveExpanded ? 'p-2' : 'justify-center p-1'}`}
-            title={!effectiveExpanded ? t('接入新项目') : undefined}
+            className={`group flex w-full items-center rounded-xl border border-dashed border-slate-300 bg-slate-50/80 text-emerald-600 transition-all duration-300 hover:border-emerald-400 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-800/25 dark:text-emerald-500 dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/10 ${isSidebarExpanded ? 'p-2' : 'justify-center p-1'}`}
+            title={!isSidebarExpanded ? t('接入新项目') : undefined}
           >
-            <div className={`flex shrink-0 items-center justify-center rounded-lg bg-slate-200/90 shadow-sm transition-colors group-hover:bg-emerald-500 group-hover:text-white dark:bg-slate-800 ${effectiveExpanded ? 'h-9 w-9' : 'h-10 w-10'}`}>
-              <Plus size={effectiveExpanded ? 18 : 20} strokeWidth={2.5} />
+            <div className={`flex shrink-0 items-center justify-center rounded-lg bg-slate-200/90 shadow-sm transition-colors group-hover:bg-emerald-500 group-hover:text-white dark:bg-slate-800 ${isSidebarExpanded ? 'h-9 w-9' : 'h-10 w-10'}`}>
+              <Plus size={isSidebarExpanded ? 18 : 20} strokeWidth={2.5} />
             </div>
-            <span className={`overflow-hidden whitespace-nowrap text-sm font-semibold text-slate-500 transition-all group-hover:text-emerald-600 dark:text-slate-400 dark:group-hover:text-emerald-400 ${effectiveExpanded ? 'ml-3 w-auto opacity-100' : 'ml-0 w-0 opacity-0'}`}>{t('接入新项目')}</span>
+            <span className={`overflow-hidden whitespace-nowrap text-sm font-semibold text-slate-500 transition-all group-hover:text-emerald-600 dark:text-slate-400 dark:group-hover:text-emerald-400 ${isSidebarExpanded ? 'ml-3 w-auto opacity-100' : 'ml-0 w-0 opacity-0'}`}>{t('接入新项目')}</span>
           </button>
         </div>
       </div>
 
-      <div className={`mt-auto w-full shrink-0 border-t border-slate-200/80 pt-4 transition-all dark:border-slate-800/80 ${effectiveExpanded ? 'px-4' : 'flex justify-center px-2'}`}>
+      <div className={`mt-auto w-full shrink-0 border-t border-slate-200/80 pt-4 transition-all dark:border-slate-800/80 ${isSidebarExpanded ? 'px-4' : 'flex justify-center px-2'}`}>
         <button
           onClick={onOpenSettings}
-          className={`group flex w-full items-center rounded-xl border border-transparent text-slate-600 transition-colors hover:border-slate-200 hover:bg-white hover:text-slate-900 dark:text-slate-400 dark:hover:border-slate-700 dark:hover:bg-slate-900 dark:hover:text-white ${effectiveExpanded ? 'p-2' : 'justify-center p-2 leading-none'}`}
-          title={!effectiveExpanded ? t('全局设置') : undefined}
+          className={`group flex w-full items-center rounded-xl border border-transparent text-slate-600 transition-colors hover:border-slate-200 hover:bg-white hover:text-slate-900 dark:text-slate-400 dark:hover:border-slate-700 dark:hover:bg-slate-900 dark:hover:text-white ${isSidebarExpanded ? 'p-2' : 'justify-center p-2 leading-none'}`}
+          title={!isSidebarExpanded ? t('全局设置') : undefined}
         >
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-200/90 transition-colors group-hover:bg-slate-300 dark:bg-slate-800/70 dark:group-hover:bg-slate-700">
             <Settings size={17} className="transition-transform duration-300 group-hover:rotate-45" />
           </div>
-          <span className={`overflow-hidden whitespace-nowrap text-sm font-semibold transition-all ${effectiveExpanded ? 'ml-3 opacity-100' : 'ml-0 w-0 opacity-0'}`}>{t('全局设置')}</span>
+          <span className={`overflow-hidden whitespace-nowrap text-sm font-semibold transition-all ${isSidebarExpanded ? 'ml-3 opacity-100' : 'ml-0 w-0 opacity-0'}`}>{t('全局设置')}</span>
         </button>
       </div>
 
-      {!compactMode && effectiveExpanded && (
+      {isSidebarExpanded && (
         <div
           role="separator"
           aria-orientation="vertical"

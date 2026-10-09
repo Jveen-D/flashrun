@@ -30,10 +30,6 @@ export interface GlobalSettings {
   theme: 'dark' | 'light' | 'system';
   language: 'zh' | 'en';
   terminalToggleShortcut: ShortcutDefinition;
-  compactMode: boolean;
-  compactModeAutoHide: boolean;
-  compactPeekHeight: number;
-  compactTriggerBandDebug: boolean;
 }
 
 export interface TerminalTabItem {
@@ -71,10 +67,6 @@ const DEFAULT_SETTINGS: GlobalSettings = {
   theme: 'system',
   language: 'zh',
   terminalToggleShortcut: getDefaultTerminalShortcut(),
-  compactMode: false,
-  compactModeAutoHide: true,
-  compactPeekHeight: 4,
-  compactTriggerBandDebug: false,
 };
 
 const MIN_TERMINAL_HEIGHT = 150;
@@ -83,8 +75,6 @@ const DEFAULT_TERMINAL_HEIGHT = 340;
 const MIN_SIDEBAR_WIDTH = 160;
 const MAX_SIDEBAR_WIDTH = 420;
 const DEFAULT_SIDEBAR_WIDTH = 252;
-const MIN_COMPACT_PEEK_HEIGHT = 2;
-const MAX_COMPACT_PEEK_HEIGHT = 5;
 let persistQueue: Promise<void> = Promise.resolve();
 let isPersisting = false;
 let needsPersist = false;
@@ -127,14 +117,6 @@ function clampSidebarWidth(width: number | null | undefined): number {
     : DEFAULT_SIDEBAR_WIDTH;
 
   return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, normalized));
-}
-
-function clampCompactPeekHeight(height: number | null | undefined): number {
-  const normalized = typeof height === 'number' && Number.isFinite(height)
-    ? Math.round(height)
-    : DEFAULT_SETTINGS.compactPeekHeight;
-
-  return Math.max(MIN_COMPACT_PEEK_HEIGHT, Math.min(MAX_COMPACT_PEEK_HEIGHT, normalized));
 }
 
 function sanitizeCommand(command: Partial<Command> | null | undefined): Command | null {
@@ -302,10 +284,6 @@ function sanitizeGlobalSettings(settings: Partial<GlobalSettings> | null | undef
     theme: settings?.theme ?? DEFAULT_SETTINGS.theme,
     language: settings?.language ?? DEFAULT_SETTINGS.language,
     terminalToggleShortcut: sanitizeShortcutDefinition(settings?.terminalToggleShortcut),
-    compactMode: settings?.compactMode ?? DEFAULT_SETTINGS.compactMode,
-    compactModeAutoHide: settings?.compactModeAutoHide ?? DEFAULT_SETTINGS.compactModeAutoHide,
-    compactPeekHeight: clampCompactPeekHeight(settings?.compactPeekHeight),
-    compactTriggerBandDebug: settings?.compactTriggerBandDebug ?? DEFAULT_SETTINGS.compactTriggerBandDebug,
   };
 }
 

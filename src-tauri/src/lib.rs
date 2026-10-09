@@ -5,7 +5,7 @@ use std::process::Command;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size, Window};
+use tauri::Manager;
 
 mod config;
 mod ports;
@@ -90,29 +90,6 @@ struct CommandStatusPayload {
     pid: u32,
     status: String,
     exit_code: Option<i32>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WindowPositionPayload {
-    x: i32,
-    y: i32,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WindowSizePayload {
-    width: u32,
-    height: u32,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CompactWindowLayoutPayload {
-    previous_position: Option<WindowPositionPayload>,
-    previous_size: Option<WindowSizePayload>,
-    was_maximized: bool,
-    compact_position: Option<WindowPositionPayload>,
 }
 
 fn stream_terminal_output<R, F>(mut reader: R, mut emit: F)
@@ -595,124 +572,6 @@ fn windows_editor_launch_candidates(editor_key: &str) -> Vec<String> {
 }
 
 #[tauri::command]
-fn enter_compact_mode(
-    window: Window,
-    compact_width: f64,
-) -> Result<CompactWindowLayoutPayload, String> {
-    let was_maximized = window.is_maximized().map_err(|e| e.to_string())?;
-    let outer_position = window.outer_position().map_err(|e| e.to_string())?;
-    let outer_size = window.outer_size().map_err(|e| e.to_string())?;
-    let monitor = window
-        .current_monitor()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "无法获取当前显示器信息。".to_string())?;
-
-    if was_maximized {
-        window.unmaximize().map_err(|e| e.to_string())?;
-    }
-
-    let compact_width = compact_width.round().max(1.0);
-    let work_area = monitor.work_area();
-    let scale_factor = monitor.scale_factor();
-    let compact_height = outer_size.height.min(work_area.size.height);
-    let compact_height_logical = (compact_height as f64 / scale_factor).round().max(1.0);
-    let compact_width_physical = (compact_width * scale_factor).round() as i32;
-    let max_visible_x = work_area.position.x + work_area.size.width as i32 - compact_width_physical;
-    // 精简模式：吸顶到工作区顶部，水平位置保持在当前显示器内
-    let compact_x = outer_position.x.clamp(
-        work_area.position.x,
-        max_visible_x.max(work_area.position.x),
-    );
-    let compact_y = work_area.position.y;
-
-    // 先置顶、再移动位置、最后缩放尺寸，避免在 Windows 上出现窗口先在旧位置缩小的视觉闪烁
-    window.set_always_on_top(true).map_err(|e| e.to_string())?;
-    window
-        .set_position(Position::Physical(PhysicalPosition::new(
-            compact_x, compact_y,
-        )))
-        .map_err(|e| e.to_string())?;
-    window
-        .set_size(Size::Logical(LogicalSize::new(
-            compact_width,
-            compact_height_logical,
-        )))
-        .map_err(|e| e.to_string())?;
-
-    let layout = CompactWindowLayoutPayload {
-        previous_position: Some(WindowPositionPayload {
-            x: outer_position.x,
-            y: outer_position.y,
-        }),
-        previous_size: Some(WindowSizePayload {
-            width: outer_size.width,
-            height: outer_size.height,
-        }),
-        was_maximized,
-        compact_position: Some(WindowPositionPayload {
-            x: compact_x,
-            y: compact_y,
-        }),
-    };
-
-    Ok(layout)
-}
-
-#[tauri::command]
-fn exit_compact_mode(window: Window, layout: CompactWindowLayoutPayload) -> Result<(), String> {
-    window.set_always_on_top(false).map_err(|e| e.to_string())?;
-
-    if let Some(previous_size) = layout.previous_size {
-        window
-            .set_size(Size::Physical(PhysicalSize::new(
-                previous_size.width,
-                previous_size.height,
-            )))
-            .map_err(|e| e.to_string())?;
-    }
-
-    if let Some(previous_position) = layout.previous_position {
-        window
-            .set_position(Position::Physical(PhysicalPosition::new(
-                previous_position.x,
-                previous_position.y,
-            )))
-            .map_err(|e| e.to_string())?;
-    }
-
-    if layout.was_maximized {
-        window.maximize().map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-fn get_cursor_position() -> Result<WindowPositionPayload, String> {
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::Foundation::POINT;
-        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-
-        let mut point = POINT { x: 0, y: 0 };
-        let result = unsafe { GetCursorPos(&mut point) };
-        if result == 0 {
-            return Err("无法获取当前鼠标位置。".to_string());
-        }
-
-        return Ok(WindowPositionPayload {
-            x: point.x,
-            y: point.y,
-        });
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("当前平台暂不支持获取全局鼠标位置。".to_string())
-    }
-}
-
-#[tauri::command]
 fn open_in_editor(path: String, editor_key: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -803,9 +662,6 @@ pub fn run() {
             kill_command,
             ports::terminate_port,
             ports::inspect_port,
-            enter_compact_mode,
-            exit_compact_mode,
-            get_cursor_position,
             open_in_editor,
         ])
         .build(tauri::generate_context!())

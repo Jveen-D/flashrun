@@ -14,14 +14,13 @@ import {
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
-  onToggleCompactMode: () => void;
 }
 
-type SettingsSection = 'general' | 'editor' | 'shortcut' | 'compact';
+type SettingsSection = 'general' | 'editor' | 'shortcut';
 
-const SECTION_IDS: SettingsSection[] = ['general', 'editor', 'shortcut', 'compact'];
+const SECTION_IDS: SettingsSection[] = ['general', 'editor', 'shortcut'];
 
-export function SettingsModal({ open, onClose, onToggleCompactMode }: SettingsModalProps) {
+export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
   const { t } = useTranslation();
   const { globalSettings, updateGlobalSettings } = useStore();
@@ -52,11 +51,6 @@ export function SettingsModal({ open, onClose, onToggleCompactMode }: SettingsMo
       id: 'shortcut' as const,
       title: t('快捷键配置'),
       description: t('查看和自定义终端切换快捷键'),
-    },
-    {
-      id: 'compact' as const,
-      title: t('精简模式偏好'),
-      description: t('吸顶悬浮、自动隐藏与感应区设置'),
     },
   ]), [t]);
 
@@ -214,97 +208,6 @@ export function SettingsModal({ open, onClose, onToggleCompactMode }: SettingsMo
               <div className="mt-4 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 px-4 py-3 text-sm text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/40">
                 {recordingMessage || t('录制时建议至少带一个修饰键，避免与普通输入冲突。')}
               </div>
-            </section>
-          </div>
-        );
-      case 'compact':
-        return (
-          <div className="space-y-6">
-            <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/50 p-5 space-y-4">
-              <div>
-                <h4 className="text-base font-bold text-slate-900 dark:text-white mb-1">{t('精简模式')}</h4>
-                <p className="text-sm text-slate-500 dark:text-slate-400">{t('开启后窗口会收缩为仅保留左侧边栏的悬浮启动器。')}</p>
-              </div>
-
-              <button
-                type="button"
-                onClick={onToggleCompactMode}
-                className={`w-full rounded-2xl border px-4 py-4 text-left transition-colors ${
-
-                  globalSettings.compactMode
-                    ? 'border-blue-300 dark:border-blue-500/40 bg-blue-50 dark:bg-blue-500/10'
-                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('启用精简模式')}</div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{t('标题栏按钮与此设置保持同步，可随时切换。')}</p>
-                  </div>
-                  <div className={`h-6 w-11 rounded-full transition-colors ${globalSettings.compactMode ? 'bg-blue-500' : 'bg-slate-300 dark:bg-slate-700'}`}>
-                    <div className={`h-5 w-5 rounded-full bg-white shadow transition-transform mt-0.5 ${globalSettings.compactMode ? 'translate-x-5 ml-0.5' : 'translate-x-0.5'}`} />
-                  </div>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => updateGlobalSettings({ compactModeAutoHide: !globalSettings.compactModeAutoHide })}
-                className={`w-full rounded-2xl border px-4 py-4 text-left transition-colors ${
-                  globalSettings.compactModeAutoHide
-                    ? 'border-emerald-300 dark:border-emerald-500/40 bg-emerald-50 dark:bg-emerald-500/10'
-                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('鼠标移出后自动吸顶隐藏')}</div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{t('开启后离开窗口即向上收起，仅保留顶部感应细缝。')}</p>
-                  </div>
-                  <div className={`h-6 w-11 rounded-full transition-colors ${globalSettings.compactModeAutoHide ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}`}>
-                    <div className={`h-5 w-5 rounded-full bg-white shadow transition-transform mt-0.5 ${globalSettings.compactModeAutoHide ? 'translate-x-5 ml-0.5' : 'translate-x-0.5'}`} />
-                  </div>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => updateGlobalSettings({ compactTriggerBandDebug: !globalSettings.compactTriggerBandDebug })}
-                className={`w-full rounded-2xl border px-4 py-4 text-left transition-colors ${
-                  globalSettings.compactTriggerBandDebug
-                    ? 'border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10'
-                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('显示顶部触发带调试')}</div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{t('高亮精简模式顶部唤出带，方便排查命中范围与唤出问题。')}</p>
-                  </div>
-                  <div className={`h-6 w-11 rounded-full transition-colors ${globalSettings.compactTriggerBandDebug ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'}`}>
-                    <div className={`h-5 w-5 rounded-full bg-white shadow transition-transform mt-0.5 ${globalSettings.compactTriggerBandDebug ? 'translate-x-5 ml-0.5' : 'translate-x-0.5'}`} />
-                  </div>
-                </div>
-              </button>
-            </section>
-
-            <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 p-5">
-              <div className="flex items-center justify-between gap-4 mb-3">
-                <div>
-                  <h4 className="text-base font-bold text-slate-900 dark:text-white">{t('顶部感应区高度')}</h4>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">{t('用于唤出吸顶后的精简窗口，范围 2 - 5px。')}</p>
-                </div>
-                <div className="text-2xl font-black text-blue-600 dark:text-blue-400">{globalSettings.compactPeekHeight}px</div>
-              </div>
-              <input
-                type="range"
-                min={2}
-                max={5}
-                step={1}
-                value={globalSettings.compactPeekHeight}
-                onChange={(event) => updateGlobalSettings({ compactPeekHeight: Number(event.target.value) })}
-                className="w-full accent-blue-500"
-              />
             </section>
           </div>
         );

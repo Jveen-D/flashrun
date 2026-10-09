@@ -1,14 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Minus, PanelLeftClose, Square, X } from 'lucide-react';
+import { Minus, Square, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { isMacPlatform } from '../utils/shortcuts';
 
-interface WindowTitleBarProps {
-  onToggleCompactMode: () => void;
-}
-
-export const WindowTitleBar: React.FC<WindowTitleBarProps> = ({ onToggleCompactMode }) => {
+export const WindowTitleBar: React.FC = () => {
   const { t } = useTranslation();
   const appWindow = useMemo(() => getCurrentWindow(), []);
   const isMac = useMemo(() => isMacPlatform(), []);
@@ -45,21 +41,6 @@ export const WindowTitleBar: React.FC<WindowTitleBarProps> = ({ onToggleCompactM
     </div>
   );
 
-  const compactButton = (
-    <button
-      type="button"
-      onClick={onToggleCompactMode}
-      className={`flex h-7 items-center gap-1.5 rounded-md border border-slate-200/80 bg-slate-100/85 text-slate-600 transition-colors hover:border-slate-300 hover:bg-white hover:text-slate-900 dark:border-slate-700/70 dark:bg-slate-900/80 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:bg-slate-800 dark:hover:text-white ${
-        isMac ? 'px-2.5' : 'px-3'
-      }`}
-      title={t('进入精简模式')}
-    >
-      <PanelLeftClose size={14} />
-      <span className="text-xs font-semibold">{t('精简模式')}</span>
-    </button>
-  );
-
-
   const renderMacControls = (hidden = false) => (
     <div className={`flex shrink-0 items-center gap-2.5 ${hidden ? 'invisible pointer-events-none' : ''}`} aria-hidden={hidden}>
 
@@ -95,13 +76,11 @@ export const WindowTitleBar: React.FC<WindowTitleBarProps> = ({ onToggleCompactM
         </button>
       </div>
 
-      {compactButton}
     </div>
   );
 
   const windowsControls = (
     <div className="flex shrink-0 items-center gap-1.5">
-      {compactButton}
 
       <button
         type="button"

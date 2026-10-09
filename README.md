@@ -106,7 +106,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 
 GitHub checks run frontend validation and native tests on Windows and macOS. Native tests require Node.js and create only their own temporary files and processes.
 
-- Shell sessions survive hidden panels, project switches, and compact mode. Closing a tab stops its session; closing the last tab replaces it with an empty tab. Normal application exit stops managed processes.
+- Shell sessions survive hidden panels and project switches. Closing a tab stops its session; closing the last tab replaces it with an empty tab. Normal application exit stops managed processes.
 - Select a command in the terminal header to view its output and answer its prompts, or select an independent Shell tab. PTYs handle echo, control keys, and resize events. Unix daemons that explicitly detach into another session (for example with `setsid`) are outside normal session cleanup.
 - Port termination first shows the selected TCP listeners or locally bound UDP processes for confirmation.
 - Configuration lives at `~/flashrun-config.json` (the user profile directory on Windows). The previous valid snapshot is kept as `flashrun-config.json.bak`. A failed read blocks overwriting; repair the original file or restore the backup and retry. Failed saves are visible and can be retried.
