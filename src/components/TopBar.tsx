@@ -1,12 +1,26 @@
 import React from 'react';
-import { useStore, type GlobalSettings } from '../store';
-import { CircleStop, FolderOpen, Folder, LoaderCircle, SquareTerminal } from 'lucide-react';
+import {
+  isJsPackageManager,
+  useStore,
+  type EditorKey,
+} from '../store';
+import {
+  Check,
+  CircleStop,
+  Folder,
+  FolderOpen,
+  LoaderCircle,
+  Pencil,
+  SquareTerminal,
+  X,
+} from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { CustomSelect } from './CustomSelect';
 import { useTranslation } from 'react-i18next';
 import { EDITOR_LABEL_MAP, EDITOR_OPTIONS } from '../utils/editors';
 import { confirm } from '@tauri-apps/plugin-dialog';
+import { toast } from '../utils/toast';
 
 interface TopBarProps {
   isTerminalOpen: boolean;
@@ -18,18 +32,57 @@ interface PortTerminationResult {
   killedPids: number[];
 }
 
+const GLOBAL_EDITOR_SENTINEL = '__global__';
+
 export const TopBar: React.FC<TopBarProps> = ({
   isTerminalOpen,
   onTerminalToggle,
 }) => {
-  const { projects, activeProjectId, globalSettings, updateProjectManager, updateGlobalSettings } = useStore();
+  const projects = useStore((state) => state.projects);
+  const activeProjectId = useStore((state) => state.activeProjectId);
+  const globalDefaultEditor = useStore((state) => state.globalSettings.defaultEditor);
+  const updateProject = useStore((state) => state.updateProject);
+  const updateProjectManager = useStore((state) => state.updateProjectManager);
   const { t } = useTranslation();
+
   const [portInput, setPortInput] = React.useState('');
   const [portProtocol, setPortProtocol] = React.useState<'tcp' | 'udp'>('tcp');
   const [isTerminatingPort, setIsTerminatingPort] = React.useState(false);
   const [portResult, setPortResult] = React.useState('');
+  const [isRenaming, setIsRenaming] = React.useState(false);
+  const [renameDraft, setRenameDraft] = React.useState('');
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+
+  React.useEffect(() => {
+    setIsRenaming(false);
+    setRenameDraft(activeProject?.name ?? '');
+  }, [activeProject?.id, activeProject?.name]);
+
+  const effectiveEditor: EditorKey = activeProject?.defaultEditor ?? globalDefaultEditor;
+  const effectiveEditorLabel = EDITOR_LABEL_MAP[effectiveEditor] || effectiveEditor;
+  const globalEditorLabel = EDITOR_LABEL_MAP[globalDefaultEditor] || globalDefaultEditor;
+
+  const commitRename = () => {
+    if (!activeProject) {
+      setIsRenaming(false);
+      return;
+    }
+
+    const trimmed = renameDraft.trim();
+    if (trimmed && trimmed !== activeProject.name) {
+      updateProject(activeProject.id, { name: trimmed });
+      toast.success(t('项目名称已更新为“{{name}}”。', { name: trimmed }));
+    } else {
+      setRenameDraft(activeProject.name);
+    }
+    setIsRenaming(false);
+  };
+
+  const cancelRename = () => {
+    setRenameDraft(activeProject?.name ?? '');
+    setIsRenaming(false);
+  };
 
   const handleOpenEditor = async () => {
     if (!activeProject) {
@@ -39,14 +92,34 @@ export const TopBar: React.FC<TopBarProps> = ({
     try {
       await invoke('open_in_editor', {
         path: activeProject.path,
-        editorKey: globalSettings.defaultEditor,
+        editorKey: effectiveEditor,
       });
     } catch (error) {
       console.error('Failed to open editor:', error);
-      const editorHint = EDITOR_LABEL_MAP[globalSettings.defaultEditor] || globalSettings.defaultEditor;
       const errorMessage = typeof error === 'string' ? error : String(error);
-      alert(t('无法唤起编辑器 {{editor}}。\n\n{{detail}}', { editor: editorHint, detail: errorMessage }));
+      toast.error(t('无法唤起编辑器 {{editor}}。\n\n{{detail}}', {
+        editor: effectiveEditorLabel,
+        detail: errorMessage,
+      }));
     }
+  };
+
+  const handleEditorChange = (value: string) => {
+    if (!activeProject) {
+      return;
+    }
+
+    if (value === GLOBAL_EDITOR_SENTINEL) {
+      updateProject(activeProject.id, { defaultEditor: null });
+      toast.info(t('该项目已恢复跟随全局编辑器（{{editor}}）。', { editor: globalEditorLabel }));
+      return;
+    }
+
+    const nextEditor = value as EditorKey;
+    updateProject(activeProject.id, { defaultEditor: nextEditor });
+    toast.success(t('已将此项目默认编辑器设为 {{editor}}。', {
+      editor: EDITOR_LABEL_MAP[nextEditor] || nextEditor,
+    }));
   };
 
   const handleTerminatePort = async (event: React.FormEvent) => {
@@ -65,7 +138,15 @@ export const TopBar: React.FC<TopBarProps> = ({
         setPortResult(t('端口 {{port}} 当前未被占用。', { port }));
         return;
       }
-      const approved = await confirm(`${portProtocol.toUpperCase()} ${port}\n${expected.map((process) => `${process.name} (PID ${process.pid})`).join('\n')}\n\n终止这些进程？未保存的工作可能丢失。`, { title: '释放端口', kind: 'warning' });
+      const processList = expected.map((process) => `${process.name} (PID ${process.pid})`).join('\n');
+      const approved = await confirm(
+        t('{{protocol}} {{port}}\n{{processes}}\n\n终止这些进程？未保存的工作可能丢失。', {
+          protocol: portProtocol.toUpperCase(),
+          port,
+          processes: processList,
+        }),
+        { title: t('释放端口'), kind: 'warning' },
+      );
       if (!approved) return;
       const result = await invoke<PortTerminationResult>('terminate_port', { port, protocol: portProtocol, expected });
       setPortResult(result.killedPids.length
@@ -83,31 +164,112 @@ export const TopBar: React.FC<TopBarProps> = ({
     return <header className="h-12 shrink-0 border-b border-slate-200/80 bg-slate-50/85 backdrop-blur dark:border-slate-800/80 dark:bg-slate-950/65" />;
   }
 
+  const editorSelectOptions = [
+    {
+      label: t('跟随全局 ({{editor}})', { editor: globalEditorLabel }),
+      value: GLOBAL_EDITOR_SENTINEL,
+    },
+    ...EDITOR_OPTIONS.map((option) => ({ label: option.label, value: option.value })),
+  ];
+
   return (
     <header className="relative z-10 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200/80 bg-slate-50/85 px-4 backdrop-blur transition-colors dark:border-slate-800/80 dark:bg-slate-950/65">
       <div className="flex min-w-0 flex-1 items-center gap-2.5">
-        <h1 className="flex shrink-0 items-center gap-2 text-[15px] font-semibold leading-tight text-slate-800 transition-colors dark:text-slate-100">
-          {activeProject.name}
-          <div className="relative group">
-            <CustomSelect
-              value={activeProject.manager}
-              onChange={(value) => updateProjectManager(activeProject.id, value)}
-              options={[
-                { label: 'NPM', value: 'npm' },
-                { label: 'PNPM', value: 'pnpm' },
-                { label: 'YARN', value: 'yarn' },
-                { label: 'BUN', value: 'bun' },
-              ]}
-              buttonClassName="flex items-center rounded-md border border-slate-300/80 bg-slate-200/70 px-2.5 py-0.5 text-[10px] font-semibold uppercase text-slate-600 transition-colors hover:bg-white hover:text-slate-900 dark:border-slate-700/80 dark:bg-slate-800/80 dark:text-slate-300 dark:hover:bg-slate-700/80 dark:hover:text-white"
-              dropdownClassName="left-0 mt-2 z-50 min-w-[100px]"
-            />
-          </div>
-        </h1>
+        <div className="group flex shrink-0 items-center gap-2 text-[15px] font-semibold leading-tight text-slate-800 transition-colors dark:text-slate-100">
+          {isRenaming ? (
+            <div className="flex items-center gap-1">
+              <input
+                value={renameDraft}
+                autoFocus
+                onChange={(event) => setRenameDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    commitRename();
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    cancelRename();
+                  }
+                }}
+                onBlur={commitRename}
+                aria-label={t('重命名项目')}
+                className="w-40 rounded-md border border-blue-400 bg-white px-2 py-0.5 text-sm font-semibold text-slate-800 outline-none ring-2 ring-blue-500/20 dark:border-blue-500 dark:bg-slate-900 dark:text-slate-100"
+              />
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={commitRename}
+                className="flex h-6 w-6 items-center justify-center rounded text-emerald-600 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-500/10"
+                title={t('保存修改')}
+              >
+                <Check size={13} />
+              </button>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={cancelRename}
+                className="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                title={t('取消')}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ) : (
+            <h1 className="flex items-center gap-1.5">
+              <span
+                onDoubleClick={() => {
+                  setRenameDraft(activeProject.name);
+                  setIsRenaming(true);
+                }}
+                title={t('双击重命名项目')}
+                className="cursor-text"
+              >
+                {activeProject.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setRenameDraft(activeProject.name);
+                  setIsRenaming(true);
+                }}
+                className="rounded p-1 text-slate-400 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-slate-200/70 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                title={t('重命名项目')}
+                aria-label={t('重命名项目')}
+              >
+                <Pencil size={12} />
+              </button>
+            </h1>
+          )}
+
+          {isJsPackageManager(activeProject.manager) ? (
+            <div className="relative">
+              <CustomSelect
+                value={activeProject.manager}
+                onChange={(value) => updateProjectManager(activeProject.id, value)}
+                options={[
+                  { label: 'NPM', value: 'npm' },
+                  { label: 'PNPM', value: 'pnpm' },
+                  { label: 'YARN', value: 'yarn' },
+                  { label: 'BUN', value: 'bun' },
+                ]}
+                buttonClassName="flex items-center rounded-md border border-slate-300/80 bg-slate-200/70 px-2.5 py-0.5 text-[10px] font-semibold uppercase text-slate-600 transition-colors hover:bg-white hover:text-slate-900 dark:border-slate-700/80 dark:bg-slate-800/80 dark:text-slate-300 dark:hover:bg-slate-700/80 dark:hover:text-white"
+                dropdownClassName="left-0 mt-2 z-50 min-w-[100px]"
+              />
+            </div>
+          ) : (
+            <span className="rounded-md border border-slate-300/80 bg-slate-200/70 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-600 dark:border-slate-700/80 dark:bg-slate-800/80 dark:text-slate-300">
+              {activeProject.manager}
+            </span>
+          )}
+        </div>
         <div className="h-4 w-px shrink-0 bg-slate-300/80 dark:bg-slate-700/80" />
 
         <div className="flex min-w-0 flex-1 items-center rounded-md border border-slate-200/80 bg-white/60 px-1.5 py-1 dark:border-slate-800/70 dark:bg-slate-900/50">
           <button
-            onClick={() => revealItemInDir(activeProject.path).catch((error) => console.error(t('打开文件夹失败:'), error))}
+            onClick={() => revealItemInDir(activeProject.path).catch((error) => {
+              console.error(t('打开文件夹失败:'), error);
+              toast.error(`${t('打开文件夹失败:')} ${String(error)}`);
+            })}
             className="mr-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-transparent text-slate-400 transition-colors hover:border-slate-300 hover:bg-white hover:text-slate-700 dark:text-slate-500 dark:hover:border-slate-700 dark:hover:bg-slate-900 dark:hover:text-white"
             title={t('在系统资源管理器中打开此目录')}
           >
@@ -121,8 +283,9 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       <div className="flex shrink-0 items-center gap-1.5">
         <form onSubmit={handleTerminatePort} className="relative flex h-8 items-stretch rounded-md border border-slate-200/80 bg-white/80 dark:border-slate-700/70 dark:bg-slate-900/80">
-          <select aria-label="端口协议" value={portProtocol} onChange={(event) => setPortProtocol(event.target.value as 'tcp' | 'udp')} className="w-14 bg-transparent text-xs">
-            <option value="tcp">TCP</option><option value="udp">UDP</option>
+          <select aria-label={t('端口协议')} value={portProtocol} onChange={(event) => setPortProtocol(event.target.value as 'tcp' | 'udp')} className="w-14 bg-transparent px-1 text-xs text-slate-700 outline-none dark:text-slate-200">
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
           </select>
           <label className="sr-only" htmlFor="port-terminator-input">{t('端口')}</label>
           <input
@@ -173,19 +336,23 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             onClick={handleOpenEditor}
             className="flex items-center gap-2 rounded-l-md px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-white hover:text-blue-600 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-blue-400"
-            title={t('一键起飞打开该项目')}
+            title={activeProject.defaultEditor
+              ? t('该项目专属编辑器：{{editor}}', { editor: effectiveEditorLabel })
+              : t('一键起飞打开该项目')}
           >
             <FolderOpen size={16} className="shrink-0" />
-            <span className="whitespace-nowrap">{t('在 {{editor}} 中打开', { editor: EDITOR_LABEL_MAP[globalSettings.defaultEditor] || t('编辑器') })}</span>
+            <span className="whitespace-nowrap">
+              {t('在 {{editor}} 中打开', { editor: effectiveEditorLabel || t('编辑器') })}
+            </span>
           </button>
           <div className="w-px bg-slate-200 transition-colors dark:bg-slate-700/70" />
           <div className="flex self-stretch rounded-r-md text-slate-500 transition-colors hover:bg-white hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200">
             <CustomSelect
-              value={globalSettings.defaultEditor}
-              onChange={(value) => updateGlobalSettings({ defaultEditor: value as GlobalSettings['defaultEditor'] })}
-              options={EDITOR_OPTIONS.map((option) => ({ label: option.label, value: option.value }))}
+              value={activeProject.defaultEditor ?? GLOBAL_EDITOR_SENTINEL}
+              onChange={handleEditorChange}
+              options={editorSelectOptions}
               buttonClassName="flex h-full items-center justify-center rounded-r-md px-2.5 text-slate-500 transition-colors hover:text-slate-700 cursor-pointer focus:outline-none dark:text-slate-400 dark:hover:text-slate-200"
-              dropdownClassName="right-0 top-full mt-2 w-40"
+              dropdownClassName="right-0 top-full mt-2 w-48"
               hideChevron={false}
               hideLabelDisplay
             />

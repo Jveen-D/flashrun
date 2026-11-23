@@ -8,12 +8,14 @@ import { WindowTitleBar } from './components/WindowTitleBar';
 import { TopBar } from './components/TopBar';
 import { ActionGrid } from './components/ActionGrid';
 import { SettingsModal } from './components/SettingsModal';
+import { ToastContainer } from './components/ToastContainer';
 
 import { flushPersistence, retryPersistence, useStore } from './store';
 import { reconcileShellSessions } from './utils/shellSessions';
 import { guardWindowClose, requestWindowClose } from './utils/windowClose';
 import { useTranslation } from 'react-i18next';
 import { eventMatchesShortcut } from './utils/shortcuts';
+import { toast } from './utils/toast';
 import {
   appendTerminalOutput,
   commandOutputKey,
@@ -50,22 +52,20 @@ function shouldIgnoreShortcutEvent(target: EventTarget | null) {
 }
 
 function App() {
-  const {
-    projects,
-    activeProjectId,
-    globalSettings,
-    hydrate,
-    hydrated,
-    hydrationError,
-    persistenceError,
-    projectTerminals,
-    isTerminalOpen,
-    terminalHeight,
-    setTerminalOpen,
-    setTerminalHeight,
-    toggleTerminal,
-    activeCommandByProject,
-  } = useStore();
+  const projects = useStore((state) => state.projects);
+  const activeProjectId = useStore((state) => state.activeProjectId);
+  const globalSettings = useStore((state) => state.globalSettings);
+  const hydrate = useStore((state) => state.hydrate);
+  const hydrated = useStore((state) => state.hydrated);
+  const hydrationError = useStore((state) => state.hydrationError);
+  const persistenceError = useStore((state) => state.persistenceError);
+  const projectTerminals = useStore((state) => state.projectTerminals);
+  const isTerminalOpen = useStore((state) => state.isTerminalOpen);
+  const terminalHeight = useStore((state) => state.terminalHeight);
+  const setTerminalOpen = useStore((state) => state.setTerminalOpen);
+  const setTerminalHeight = useStore((state) => state.setTerminalHeight);
+  const toggleTerminal = useStore((state) => state.toggleTerminal);
+  const activeCommandByProject = useStore((state) => state.activeCommandByProject);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isDraggingState, setIsDraggingState] = useState(false);
   const [mountedTerminalProjectIds, setMountedTerminalProjectIds] = useState<string[]>([]);
@@ -118,7 +118,14 @@ function App() {
     pruneCommandOutput(new Set(projects.flatMap((project) => project.commands.map((command) => commandOutputKey(project.id, command.id)))));
   }, [hydrated, projectTerminals, projects]);
 
-  useEffect(() => guardWindowClose(appWindow, flushPersistence), [appWindow]);
+  useEffect(() => guardWindowClose(
+    appWindow,
+    flushPersistence,
+    (error) => toast.error(String(error)),
+    (error) => window.confirm(
+      t('配置尚未保存：{{error}}\n\n是否仍要退出并放弃本次未保存的更改？取消后可重试保存。', { error: String(error) }),
+    ),
+  ), [appWindow, t]);
 
   useEffect(() => {
     if (!hydrated || !activeProjectId) return;
@@ -136,11 +143,16 @@ function App() {
 
   useEffect(() => {
     const root = document.documentElement;
-    if (globalSettings.theme === 'system') {
-      root.classList.toggle('dark', window.matchMedia('(prefers-color-scheme: dark)').matches);
-    } else {
+    if (globalSettings.theme !== 'system') {
       root.classList.toggle('dark', globalSettings.theme === 'dark');
+      return undefined;
     }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const applySystemTheme = () => root.classList.toggle('dark', mediaQuery.matches);
+    applySystemTheme();
+    mediaQuery.addEventListener('change', applySystemTheme);
+    return () => mediaQuery.removeEventListener('change', applySystemTheme);
   }, [globalSettings.theme]);
 
   useEffect(() => {
@@ -158,10 +170,8 @@ function App() {
       event.stopImmediatePropagation();
       toggleTerminalWithFit();
     };
-    document.addEventListener('keydown', handleKeyDown, true);
     window.addEventListener('keydown', handleKeyDown, true);
     return () => {
-      document.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keydown', handleKeyDown, true);
     };
   }, [globalSettings.terminalToggleShortcut, hydrated, toggleTerminalWithFit]);
@@ -233,14 +243,14 @@ function App() {
       className="relative flex h-screen w-full flex-col overflow-hidden bg-slate-100/80 font-sans text-slate-800 transition-colors duration-300 dark:bg-[#0A0F1A] dark:text-slate-300"
     >
       {hydrationError && <div role="alert" className="absolute inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-slate-950 p-8 text-slate-100">
-        <p>配置读取失败，原文件未被覆盖。请修复配置或从备份恢复后重试。</p>
+        <p>{t('配置读取失败，原文件未被覆盖。请修复配置或从备份恢复后重试。')}</p>
         <pre className="max-w-full whitespace-pre-wrap text-sm">{hydrationError}</pre>
-        <button className="rounded bg-blue-600 px-4 py-2" onClick={() => void hydrate()}>重试读取</button>
-        <button onClick={() => void requestWindowClose(appWindow)}>退出</button>
+        <button className="rounded bg-blue-600 px-4 py-2" onClick={() => void hydrate()}>{t('重试读取')}</button>
+        <button onClick={() => void requestWindowClose(appWindow, (error) => toast.error(String(error)))}>{t('退出')}</button>
       </div>}
       {persistenceError && <div role="alert" className="z-50 bg-amber-100 p-2 text-sm text-amber-950">
-        配置未保存：{persistenceError}
-        <button className="ml-2 underline" onClick={() => void retryPersistence().catch(console.error)}>重试保存</button>
+        {t('配置未保存：{{error}}', { error: persistenceError })}
+        <button className="ml-2 underline" onClick={() => void retryPersistence().catch(console.error)}>{t('重试保存')}</button>
       </div>}
       <WindowTitleBar />
 
@@ -318,6 +328,7 @@ function App() {
         open={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
       />
+      <ToastContainer />
     </div>
   );
 }

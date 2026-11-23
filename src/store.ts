@@ -7,6 +7,26 @@ import {
   sanitizeShortcutDefinition,
 } from './utils/shortcuts';
 
+export type EditorKey = 'code' | 'cursor' | 'zed' | 'codebuddy' | 'antigravity';
+
+const VALID_EDITORS = new Set<EditorKey>(['code', 'cursor', 'zed', 'codebuddy', 'antigravity']);
+export const JS_PACKAGE_MANAGERS = ['npm', 'pnpm', 'yarn', 'bun'] as const;
+
+export function isJsPackageManager(manager: string): boolean {
+  return (JS_PACKAGE_MANAGERS as readonly string[]).includes(manager);
+}
+
+export interface DetectedCommand {
+  label: string;
+  cmd: string;
+}
+
+export interface ProjectInfoPayload {
+  manager: string;
+  scripts: Record<string, string>;
+  commands?: DetectedCommand[];
+}
+
 export interface Command {
   id: string;
   label: string;
@@ -22,11 +42,11 @@ export interface Project {
   path: string;
   manager: string;
   commands: Command[];
-  defaultEditor?: 'code' | 'cursor' | 'zed' | 'codebuddy' | 'antigravity';
+  defaultEditor?: EditorKey;
 }
 
 export interface GlobalSettings {
-  defaultEditor: 'code' | 'cursor' | 'zed' | 'codebuddy' | 'antigravity';
+  defaultEditor: EditorKey;
   theme: 'dark' | 'light' | 'system';
   language: 'zh' | 'en';
   terminalToggleShortcut: ShortcutDefinition;
@@ -174,6 +194,12 @@ function sanitizeCommands(commands: Array<Partial<Command>> | null | undefined):
   return ensureSingleDefaultCommand(sanitizedCommands);
 }
 
+function sanitizeEditorKey(editor: unknown): EditorKey | undefined {
+  return typeof editor === 'string' && VALID_EDITORS.has(editor as EditorKey)
+    ? (editor as EditorKey)
+    : undefined;
+}
+
 function sanitizeProject(project: Partial<Project> | null | undefined): Project | null {
   const name = typeof project?.name === 'string' ? project.name.trim() : '';
   const path = typeof project?.path === 'string' ? project.path.trim() : '';
@@ -183,13 +209,15 @@ function sanitizeProject(project: Partial<Project> | null | undefined): Project 
     return null;
   }
 
+  const defaultEditor = sanitizeEditorKey(project?.defaultEditor);
+
   return {
     id: typeof project?.id === 'string' && project.id ? project.id : nanoid(),
     name,
     path,
     manager,
     commands: sanitizeCommands(project?.commands as Array<Partial<Command>> | undefined),
-    defaultEditor: project?.defaultEditor,
+    ...(defaultEditor ? { defaultEditor } : {}),
   };
 }
 
@@ -332,18 +360,49 @@ function resolvePreferredRunningCommandId(commands: Command[], preferredCommandI
   return [...commands].reverse().find((command) => command.status === 'running')?.id ?? null;
 }
 
-function buildInitialCommands(manager: string, scripts: Record<string, string>): Command[] {
-  const scriptEntries = Object.entries(scripts);
-  const defaultLabel = scriptEntries.find(([key]) => key === 'dev')?.[0] ?? scriptEntries[0]?.[0] ?? null;
+function buildDetectedCommands(
+  manager: string,
+  scripts: Record<string, string>,
+  detectedCommands?: DetectedCommand[],
+): DetectedCommand[] {
+  if (Array.isArray(detectedCommands) && detectedCommands.length > 0) {
+    return detectedCommands
+      .map((item) => ({
+        label: item.label.trim(),
+        cmd: item.cmd.trim(),
+      }))
+      .filter((item) => item.label.length > 0 && item.cmd.length > 0);
+  }
 
-  return scriptEntries.map(([key]) => ({
-    id: nanoid(),
+  return Object.keys(scripts).map((key) => ({
     label: key,
     cmd: `${manager} run ${key}`,
+  }));
+}
+
+function buildInitialCommands(
+  manager: string,
+  scripts: Record<string, string>,
+  detectedCommands?: DetectedCommand[],
+): Command[] {
+  const entries = buildDetectedCommands(manager, scripts, detectedCommands);
+  const defaultLabel = entries.find((item) => item.label === 'dev')?.label
+    ?? entries.find((item) => item.label === 'run')?.label
+    ?? entries[0]?.label
+    ?? null;
+
+  return entries.map((item) => ({
+    id: nanoid(),
+    label: item.label,
+    cmd: item.cmd,
     status: 'idle' as const,
     pid: null,
-    isDefault: key === defaultLabel,
+    isDefault: item.label === defaultLabel,
   }));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 let persistedStateCache: PersistedState = sanitizePersistedState(undefined);
@@ -435,7 +494,22 @@ interface StoreState {
   activeCommandByProject: Record<string, string | null>;
 
   hydrate: () => Promise<void>;
-  addProject: (path: string, manager: string, scripts: Record<string, string>) => AddProjectResult;
+  addProject: (
+    path: string,
+    manager: string,
+    scripts: Record<string, string>,
+    detectedCommands?: DetectedCommand[],
+  ) => AddProjectResult;
+  updateProject: (
+    projectId: string,
+    updates: { name?: string; defaultEditor?: EditorKey | null },
+  ) => void;
+  syncProjectCommands: (
+    projectId: string,
+    manager: string,
+    scripts: Record<string, string>,
+    detectedCommands?: DetectedCommand[],
+  ) => { added: number };
   updateProjectManager: (projectId: string, newManager: string) => void;
   setActiveProject: (id: string) => void;
   removeProject: (id: string) => void;
@@ -520,7 +594,7 @@ export const useStore = create<StoreState>((set) => ({
     try { await hydratePromise; } finally { hydratePromise = null; }
   },
 
-  addProject: (path, manager, scripts) => {
+  addProject: (path, manager, scripts, detectedCommands) => {
     const projectId = nanoid();
     let result: AddProjectResult = { status: 'added', projectId };
 
@@ -537,7 +611,7 @@ export const useStore = create<StoreState>((set) => ({
         name,
         path,
         manager,
-        commands: buildInitialCommands(manager, scripts),
+        commands: buildInitialCommands(manager, scripts, detectedCommands),
       };
       const projects = [...state.projects, newProject];
       const activeProjectId = state.activeProjectId || newProject.id;
@@ -566,6 +640,98 @@ export const useStore = create<StoreState>((set) => ({
     return result;
   },
 
+  updateProject: (projectId, updates) => set((state) => {
+    let changed = false;
+    const projects = state.projects.map((project) => {
+      if (project.id !== projectId) {
+        return project;
+      }
+
+      const nextProject: Project = { ...project };
+      if (typeof updates.name === 'string') {
+        const trimmed = updates.name.trim();
+        if (trimmed && trimmed !== project.name) {
+          nextProject.name = trimmed;
+          changed = true;
+        }
+      }
+
+      if ('defaultEditor' in updates) {
+        const nextEditor = updates.defaultEditor === null ? undefined : sanitizeEditorKey(updates.defaultEditor);
+        if (nextEditor !== project.defaultEditor) {
+          if (nextEditor) {
+            nextProject.defaultEditor = nextEditor;
+          } else {
+            delete nextProject.defaultEditor;
+          }
+          changed = true;
+        }
+      }
+
+      return nextProject;
+    });
+
+    if (!changed) {
+      return state;
+    }
+
+    void persistProjects(projects);
+    return { projects };
+  }),
+
+  syncProjectCommands: (projectId, manager, scripts, detectedCommands) => {
+    let added = 0;
+
+    set((state) => {
+      const target = state.projects.find((project) => project.id === projectId);
+      if (!target) {
+        return state;
+      }
+
+      const effectiveManager = isJsPackageManager(target.manager) ? target.manager : manager;
+      const incoming = isJsPackageManager(effectiveManager) && Object.keys(scripts).length > 0
+        ? Object.keys(scripts).map((key) => ({ label: key, cmd: `${effectiveManager} run ${key}` }))
+        : buildDetectedCommands(effectiveManager, scripts, detectedCommands);
+
+      const existingLabels = new Set(target.commands.map((command) => command.label.toLowerCase()));
+      const newCommands: Command[] = [];
+      for (const item of incoming) {
+        const key = item.label.toLowerCase();
+        if (!existingLabels.has(key)) {
+          existingLabels.add(key);
+          newCommands.push({
+            id: nanoid(),
+            label: item.label,
+            cmd: item.cmd,
+            status: 'idle',
+            pid: null,
+            isDefault: false,
+          });
+        }
+      }
+
+      added = newCommands.length;
+      if (added === 0) {
+        return state;
+      }
+
+      const projects = state.projects.map((project) => {
+        if (project.id !== projectId) {
+          return project;
+        }
+        return {
+          ...project,
+          commands: ensureSingleDefaultCommand([...project.commands, ...newCommands]),
+        };
+      });
+
+      void persistProjects(projects);
+      return { projects };
+    });
+
+    return { added };
+  },
+
   updateProjectManager: (projectId, newManager) => set((state) => {
     const projects = state.projects.map((project) => {
       if (project.id !== projectId) {
@@ -573,13 +739,14 @@ export const useStore = create<StoreState>((set) => ({
       }
 
       const oldManager = project.manager;
+      const shouldRewriteCommands = isJsPackageManager(oldManager) && isJsPackageManager(newManager);
+      const regex = shouldRewriteCommands ? new RegExp(`^${escapeRegExp(oldManager)}\\b`) : null;
       return {
         ...project,
         manager: newManager,
-        commands: project.commands.map((command) => {
-          const regex = new RegExp(`^${oldManager}\\b`);
-          return { ...command, cmd: command.cmd.replace(regex, newManager) };
-        }),
+        commands: regex
+          ? project.commands.map((command) => ({ ...command, cmd: command.cmd.replace(regex, newManager) }))
+          : project.commands,
       };
     });
 

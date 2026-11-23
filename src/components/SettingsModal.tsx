@@ -23,7 +23,8 @@ const SECTION_IDS: SettingsSection[] = ['general', 'editor', 'shortcut'];
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
   const { t } = useTranslation();
-  const { globalSettings, updateGlobalSettings } = useStore();
+  const globalSettings = useStore((state) => state.globalSettings);
+  const updateGlobalSettings = useStore((state) => state.updateGlobalSettings);
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
   const [isRecordingShortcut, setIsRecordingShortcut] = useState(false);
   const [recordingMessage, setRecordingMessage] = useState('');
@@ -35,6 +36,30 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       setRecordingMessage('');
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      event.preventDefault();
+      if (isRecordingShortcut) {
+        setIsRecordingShortcut(false);
+        setRecordingMessage('');
+        return;
+      }
+
+      onClose();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isRecordingShortcut, onClose, open]);
 
   const sections = useMemo(() => ([
     {
@@ -217,7 +242,14 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   };
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 p-5 backdrop-blur-sm dark:bg-black/70">
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 p-5 backdrop-blur-sm dark:bg-black/70"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
       <div className="flex h-[680px] w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-2xl dark:border-slate-700/70 dark:bg-slate-900/95">
         <aside className="flex w-72 flex-col border-r border-slate-200/80 bg-slate-50/90 p-5 dark:border-slate-800/80 dark:bg-slate-950/50">
           <div className="mb-6 flex items-start justify-between gap-3">

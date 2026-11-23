@@ -16,13 +16,14 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { areProjectPathsEqual, useStore } from '../store';
+import { areProjectPathsEqual, useStore, type Project, type ProjectInfoPayload } from '../store';
 import { useTranslation } from 'react-i18next';
-import { FolderKanban, GripVertical, PanelLeft, PanelLeftClose, Play, Plus, Settings, Square } from 'lucide-react';
+import { FolderKanban, GripVertical, PanelLeft, PanelLeftClose, Play, Plus, Settings, Square, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import { confirm, open } from '@tauri-apps/plugin-dialog';
 import logoUrl from '../assets/logo.jpg';
 import { useCommandRunner } from '../hooks/useCommandRunner';
+import { toast } from '../utils/toast';
 
 interface SidebarProps {
   onOpenSettings: () => void;
@@ -86,18 +87,17 @@ function SortableProjectItem({ id, onClick, dragLabel, expanded, children }: Sor
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
-  const {
-    projects,
-    activeProjectId,
-    setActiveProject,
-    addProject,
-    isSidebarExpanded,
-    setSidebarExpanded,
-    sidebarWidth,
-    setSidebarWidth,
-    reorderProjects,
-  } = useStore();
-  const { runDefaultCommand, stopCommand } = useCommandRunner();
+  const projects = useStore((state) => state.projects);
+  const activeProjectId = useStore((state) => state.activeProjectId);
+  const setActiveProject = useStore((state) => state.setActiveProject);
+  const addProject = useStore((state) => state.addProject);
+  const removeProject = useStore((state) => state.removeProject);
+  const isSidebarExpanded = useStore((state) => state.isSidebarExpanded);
+  const setSidebarExpanded = useStore((state) => state.setSidebarExpanded);
+  const sidebarWidth = useStore((state) => state.sidebarWidth);
+  const setSidebarWidth = useStore((state) => state.setSidebarWidth);
+  const reorderProjects = useStore((state) => state.reorderProjects);
+  const { runDefaultCommand, stopCommand, stopProjectCommands } = useCommandRunner();
   const { t } = useTranslation();
   const asideRef = React.useRef<HTMLElement | null>(null);
   const [isResizing, setIsResizing] = React.useState(false);
@@ -169,23 +169,59 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
         const existingProject = projects.find((project) => areProjectPathsEqual(project.path, path));
         if (existingProject) {
           setActiveProject(existingProject.id);
-          alert(t('项目“{{project}}”已接入，无需重复添加。', { project: existingProject.name }));
+          toast.info(t('项目“{{project}}”已接入，无需重复添加。', { project: existingProject.name }));
           return;
         }
 
-        const projectInfo = await invoke<{ manager: string; scripts: Record<string, string> }>('parse_project_info', { path });
-        const result = addProject(path, projectInfo.manager, projectInfo.scripts);
+        const projectInfo = await invoke<ProjectInfoPayload>('parse_project_info', { path });
+        const result = addProject(path, projectInfo.manager, projectInfo.scripts, projectInfo.commands);
         if (result.status === 'exists') {
           const concurrentProject = useStore.getState().projects.find((project) => project.id === result.projectId);
           setActiveProject(result.projectId);
-          alert(t('项目“{{project}}”已接入，无需重复添加。', {
+          toast.info(t('项目“{{project}}”已接入，无需重复添加。', {
             project: concurrentProject?.name ?? path,
           }));
+        } else {
+          setActiveProject(result.projectId);
+          const addedProject = useStore.getState().projects.find((project) => project.id === result.projectId);
+          toast.success(t('已接入项目“{{project}}”。', { project: addedProject?.name ?? path }));
         }
       }
     } catch (error) {
       console.error('Failed to add project:', error);
-      alert(error);
+      toast.error(String(error));
+    }
+  };
+
+  const handleRemoveProject = async (project: Project, event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    const runningCount = project.commands.filter((command) => command.status === 'running').length;
+    const message = runningCount > 0
+      ? t('项目“{{project}}”有 {{count}} 个命令正在运行。移除前将终止相关进程（不会删除本地文件），确定继续吗？', {
+        project: project.name,
+        count: runningCount,
+      })
+      : t('确定从工作区移除项目“{{project}}”吗？（仅移出列表，不会删除本地文件）', {
+        project: project.name,
+      });
+
+    const approved = await confirm(message, {
+      title: t('移除项目'),
+      kind: runningCount > 0 ? 'warning' : 'info',
+    });
+    if (!approved) {
+      return;
+    }
+
+    try {
+      if (runningCount > 0) {
+        await stopProjectCommands(project.id);
+      }
+      removeProject(project.id);
+      toast.success(t('已移除项目“{{project}}”。', { project: project.name }));
+    } catch (error) {
+      console.error('Failed to remove project:', error);
+      toast.error(t('移除项目失败：{{error}}', { error: String(error) }));
     }
   };
 
@@ -258,7 +294,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
 
             void action.catch((error) => {
               console.error(error);
-              alert(t(isDefaultRunning ? '停止进程失败：{{error}}' : '运行命令失败：{{error}}', {
+              toast.error(t(isDefaultRunning ? '停止进程失败：{{error}}' : '运行命令失败：{{error}}', {
                 error: String(error),
               }));
             });
@@ -346,19 +382,32 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
                   </div>
                 </div>
 
-                {isSidebarExpanded && defaultCommand && (
-                  <button
-                    type="button"
-                    onClick={handleDefaultAction}
-                    className={`ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-all ${
-                      isDefaultRunning
-                        ? 'border-rose-500 bg-rose-500 text-white hover:bg-rose-400'
-                        : 'scale-95 border-emerald-200 bg-white text-emerald-600 opacity-0 group-hover:scale-100 group-hover:opacity-100 hover:bg-emerald-50 dark:border-emerald-500/25 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-500/10'
-                    }`}
-                    title={isDefaultRunning ? t('停止默认启动命令') : t('运行默认启动命令')}
-                  >
-                    {isDefaultRunning ? <Square size={12} className="fill-current" /> : <Play size={12} className="ml-[1px] fill-current" />}
-                  </button>
+                {isSidebarExpanded && (
+                  <div className="ml-2 flex shrink-0 items-center gap-1">
+                    {defaultCommand && (
+                      <button
+                        type="button"
+                        onClick={handleDefaultAction}
+                        className={`flex h-7 w-7 items-center justify-center rounded-md border transition-all ${
+                          isDefaultRunning
+                            ? 'border-rose-500 bg-rose-500 text-white hover:bg-rose-400'
+                            : 'scale-95 border-emerald-200 bg-white text-emerald-600 opacity-0 group-hover:scale-100 group-hover:opacity-100 hover:bg-emerald-50 dark:border-emerald-500/25 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-500/10'
+                        }`}
+                        title={isDefaultRunning ? t('停止默认启动命令') : t('运行默认启动命令')}
+                      >
+                        {isDefaultRunning ? <Square size={12} className="fill-current" /> : <Play size={12} className="ml-[1px] fill-current" />}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(event) => void handleRemoveProject(project, event)}
+                      className="flex h-7 w-7 scale-95 items-center justify-center rounded-md border border-transparent text-slate-400 opacity-0 transition-all group-hover:scale-100 group-hover:opacity-100 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 dark:text-slate-500 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
+                      title={t('移除项目')}
+                      aria-label={t('移除项目')}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 )}
               </div>
 

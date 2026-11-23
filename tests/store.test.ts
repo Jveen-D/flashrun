@@ -64,4 +64,39 @@ describe('configuration protection', () => {
     expect(tabs[0].id).not.toBe(previous);
     await flushPersistence();
   });
+  it('supports project rename, per-project editor override, and incremental script sync', async () => {
+    mocks.invoke.mockResolvedValue(null);
+    const { useStore, flushPersistence } = await import('../src/store');
+    await useStore.getState().hydrate();
+    const { projectId } = useStore.getState().addProject('/workspace/demo', 'pnpm', { dev: 'vite' });
+
+    useStore.getState().updateProject(projectId, { name: 'Demo App', defaultEditor: 'cursor' });
+    let project = useStore.getState().projects.find((item) => item.id === projectId)!;
+    expect(project.name).toBe('Demo App');
+    expect(project.defaultEditor).toBe('cursor');
+
+    useStore.getState().updateProject(projectId, { defaultEditor: null });
+    project = useStore.getState().projects.find((item) => item.id === projectId)!;
+    expect(project.defaultEditor).toBeUndefined();
+
+    // Edit existing command, then sync scripts: existing command must be preserved while new scripts are added.
+    useStore.getState().updateCommand(projectId, project.commands[0].id, { cmd: 'pnpm run dev --host' });
+    const syncResult = useStore.getState().syncProjectCommands(projectId, 'pnpm', { dev: 'vite', build: 'vite build' });
+    expect(syncResult.added).toBe(1);
+    project = useStore.getState().projects.find((item) => item.id === projectId)!;
+    expect(project.commands.map((c) => [c.label, c.cmd])).toEqual([
+      ['dev', 'pnpm run dev --host'],
+      ['build', 'pnpm run build'],
+    ]);
+
+    const { projectId: cargoProjectId } = useStore.getState().addProject('/workspace/rust-app', 'cargo', {}, [
+      { label: 'run', cmd: 'cargo run' },
+      { label: 'test', cmd: 'cargo test' },
+    ]);
+    const cargoProject = useStore.getState().projects.find((item) => item.id === cargoProjectId)!;
+    expect(cargoProject.manager).toBe('cargo');
+    expect(cargoProject.commands[0].isDefault).toBe(true);
+    expect(cargoProject.commands.map((c) => c.cmd)).toEqual(['cargo run', 'cargo test']);
+    await flushPersistence();
+  });
 });

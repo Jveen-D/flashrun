@@ -10,19 +10,30 @@ vi.mock('../src/components/Sidebar', () => ({ Sidebar: () => 'PROJECT_SIDEBAR' }
 vi.mock('../src/components/TopBar', () => ({ TopBar: () => 'PROJECT_TOOLBAR' }));
 vi.mock('../src/components/ActionGrid', () => ({ ActionGrid: () => 'PROJECT_COMMANDS' }));
 vi.mock('../src/components/SettingsModal', () => ({ SettingsModal: () => null }));
-vi.mock('../src/store', () => ({
-  useStore: () => ({
+vi.mock('../src/components/ToastContainer', () => ({ ToastContainer: () => null }));
+vi.mock('../src/store', () => {
+  const state = {
     projects: [{ id: 'project', name: 'Example', commands: [] }],
     activeProjectId: 'project',
     activeCommandByProject: {},
     globalSettings: { theme: 'light', language: 'en' },
     hydrated: true,
+    hydrationError: null,
+    persistenceError: null,
     isTerminalOpen: false,
+    terminalHeight: 340,
     projectTerminals: {},
-  }),
-  flushPersistence: vi.fn(),
-  retryPersistence: vi.fn(),
-}));
+    hydrate: vi.fn(),
+    setTerminalOpen: vi.fn(),
+    setTerminalHeight: vi.fn(),
+    toggleTerminal: vi.fn(),
+  };
+  return {
+    useStore: (selector?: (s: typeof state) => unknown) => (selector ? selector(state) : state),
+    flushPersistence: vi.fn(),
+    retryPersistence: vi.fn(),
+  };
+});
 
 describe('main layout', () => {
   it('keeps window controls and the full project workspace when the terminal is hidden', async () => {

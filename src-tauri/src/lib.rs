@@ -59,15 +59,24 @@ fn migrate_legacy_config_if_needed(target_path: &Path) -> Result<(), String> {
     config::migrate(&legacy_path, target_path)
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct DetectedCommand {
+    label: String,
+    cmd: String,
+}
+
 #[derive(Serialize)]
 struct ProjectInfo {
     manager: String,
     scripts: IndexMap<String, String>,
+    commands: Vec<DetectedCommand>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PackageJson {
     scripts: Option<IndexMap<String, String>>,
+    package_manager: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -147,35 +156,221 @@ where
     }
 }
 
-#[tauri::command]
-fn parse_project_info(path: String) -> Result<ProjectInfo, String> {
-    let base_path = Path::new(&path);
-    let pkg_json_path = base_path.join("package.json");
-
-    if !pkg_json_path.exists() {
-        return Err("当前目录并非有效的 Node.js 前端项目（未能找到 package.json）。".to_string());
-    }
-
-    let manager = if base_path.join("pnpm-lock.yaml").exists() {
+fn detect_node_manager(base_path: &Path, package_manager_field: Option<&str>) -> &'static str {
+    if base_path.join("pnpm-lock.yaml").exists() {
         "pnpm"
     } else if base_path.join("yarn.lock").exists() {
         "yarn"
+    } else if base_path.join("bun.lock").exists() || base_path.join("bun.lockb").exists() {
+        "bun"
+    } else if let Some(raw) = package_manager_field {
+        let name = raw.split('@').next().unwrap_or("").trim();
+        match name {
+            "pnpm" => "pnpm",
+            "yarn" => "yarn",
+            "bun" => "bun",
+            "npm" => "npm",
+            _ => "npm",
+        }
     } else {
         "npm"
-    };
+    }
+}
 
-    let content =
-        fs::read_to_string(&pkg_json_path).map_err(|e| format!("读取 package.json 失败: {}", e))?;
+fn parse_makefile_targets(content: &str) -> Vec<DetectedCommand> {
+    let mut commands = Vec::new();
+    let mut seen = std::collections::HashSet::new();
 
-    let parsed: PackageJson = serde_json::from_str(&content).unwrap_or(PackageJson {
-        scripts: Some(IndexMap::new()),
-    });
+    for line in content.lines() {
+        if line.starts_with('\t') || line.starts_with(' ') || line.starts_with('#') {
+            continue;
+        }
+        let Some((lhs, rhs)) = line.split_once(':') else {
+            continue;
+        };
+        if rhs.starts_with('=') {
+            continue;
+        }
+        let target = lhs.trim();
+        if target.is_empty()
+            || target.starts_with('.')
+            || target.contains(' ')
+            || target.contains('$')
+            || target.contains('%')
+            || target.contains('=')
+        {
+            continue;
+        }
+        if target
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+            && seen.insert(target.to_string())
+        {
+            commands.push(DetectedCommand {
+                label: target.to_string(),
+                cmd: format!("make {target}"),
+            });
+        }
+    }
 
-    let scripts = parsed.scripts.unwrap_or_default();
+    commands
+}
 
+fn detected_commands_for_non_node(base_path: &Path) -> (&'static str, Vec<DetectedCommand>) {
+    if base_path.join("Cargo.toml").exists() {
+        return (
+            "cargo",
+            vec![
+                DetectedCommand {
+                    label: "run".into(),
+                    cmd: "cargo run".into(),
+                },
+                DetectedCommand {
+                    label: "build".into(),
+                    cmd: "cargo build".into(),
+                },
+                DetectedCommand {
+                    label: "test".into(),
+                    cmd: "cargo test".into(),
+                },
+                DetectedCommand {
+                    label: "check".into(),
+                    cmd: "cargo check".into(),
+                },
+            ],
+        );
+    }
+
+    if base_path.join("go.mod").exists() {
+        return (
+            "go",
+            vec![
+                DetectedCommand {
+                    label: "run".into(),
+                    cmd: "go run .".into(),
+                },
+                DetectedCommand {
+                    label: "build".into(),
+                    cmd: "go build ./...".into(),
+                },
+                DetectedCommand {
+                    label: "test".into(),
+                    cmd: "go test ./...".into(),
+                },
+            ],
+        );
+    }
+
+    if base_path.join("pyproject.toml").exists() || base_path.join("requirements.txt").exists() {
+        let (manager, test_cmd) = if base_path.join("uv.lock").exists() {
+            ("uv", "uv run pytest")
+        } else if base_path.join("poetry.lock").exists() {
+            ("poetry", "poetry run pytest")
+        } else {
+            ("python", "pytest")
+        };
+
+        let mut commands = Vec::new();
+        if base_path.join("manage.py").exists() {
+            commands.push(DetectedCommand {
+                label: "runserver".into(),
+                cmd: match manager {
+                    "uv" => "uv run python manage.py runserver".into(),
+                    "poetry" => "poetry run python manage.py runserver".into(),
+                    _ => "python manage.py runserver".into(),
+                },
+            });
+        }
+        commands.push(DetectedCommand {
+            label: "test".into(),
+            cmd: test_cmd.into(),
+        });
+        return (manager, commands);
+    }
+
+    for makefile_name in ["Makefile", "makefile"] {
+        let makefile_path = base_path.join(makefile_name);
+        if makefile_path.is_file() {
+            let commands = fs::read_to_string(&makefile_path)
+                .map(|content| parse_makefile_targets(&content))
+                .unwrap_or_default();
+            return ("make", commands);
+        }
+    }
+
+    let has_compose = [
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+    ]
+    .iter()
+    .any(|name| base_path.join(name).exists());
+
+    if has_compose {
+        return (
+            "docker",
+            vec![
+                DetectedCommand {
+                    label: "up".into(),
+                    cmd: "docker compose up".into(),
+                },
+                DetectedCommand {
+                    label: "up-d".into(),
+                    cmd: "docker compose up -d".into(),
+                },
+                DetectedCommand {
+                    label: "down".into(),
+                    cmd: "docker compose down".into(),
+                },
+                DetectedCommand {
+                    label: "logs".into(),
+                    cmd: "docker compose logs -f".into(),
+                },
+            ],
+        );
+    }
+
+    ("custom", Vec::new())
+}
+
+#[tauri::command]
+fn parse_project_info(path: String) -> Result<ProjectInfo, String> {
+    let base_path = Path::new(&path);
+    if !base_path.is_dir() {
+        return Err("目录不存在或无法访问。".to_string());
+    }
+
+    let pkg_json_path = base_path.join("package.json");
+    if pkg_json_path.is_file() {
+        let content = fs::read_to_string(&pkg_json_path)
+            .map_err(|e| format!("读取 package.json 失败: {}", e))?;
+
+        let parsed: PackageJson =
+            serde_json::from_str(&content).map_err(|e| format!("解析 package.json 失败: {}", e))?;
+
+        let manager = detect_node_manager(base_path, parsed.package_manager.as_deref());
+        let scripts = parsed.scripts.unwrap_or_default();
+        let commands = scripts
+            .keys()
+            .map(|key| DetectedCommand {
+                label: key.clone(),
+                cmd: format!("{manager} run {key}"),
+            })
+            .collect();
+
+        return Ok(ProjectInfo {
+            manager: manager.to_string(),
+            scripts,
+            commands,
+        });
+    }
+
+    let (manager, commands) = detected_commands_for_non_node(base_path);
     Ok(ProjectInfo {
         manager: manager.to_string(),
-        scripts,
+        scripts: IndexMap::new(),
+        commands,
     })
 }
 
@@ -674,4 +869,93 @@ pub fn run() {
                 app.state::<ProcessManager>().shutdown();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_bun_lockfile_and_package_manager_field() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"dev":"vite","build":"vite build"}}"#,
+        )
+        .unwrap();
+        fs::write(dir.path().join("bun.lock"), "").unwrap();
+
+        let info = parse_project_info(dir.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(info.manager, "bun");
+        assert_eq!(
+            info.commands,
+            vec![
+                DetectedCommand {
+                    label: "dev".into(),
+                    cmd: "bun run dev".into()
+                },
+                DetectedCommand {
+                    label: "build".into(),
+                    cmd: "bun run build".into()
+                },
+            ]
+        );
+
+        let dir_pm = tempfile::tempdir().unwrap();
+        fs::write(
+            dir_pm.path().join("package.json"),
+            r#"{"packageManager":"pnpm@10.34.6","scripts":{"lint":"eslint"}}"#,
+        )
+        .unwrap();
+        let info_pm = parse_project_info(dir_pm.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(info_pm.manager, "pnpm");
+    }
+
+    #[test]
+    fn reports_error_for_malformed_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), "{ invalid json").unwrap();
+        let err = parse_project_info(dir.path().to_string_lossy().into_owned())
+            .err()
+            .unwrap();
+        assert!(err.contains("解析 package.json 失败"));
+    }
+
+    #[test]
+    fn detects_non_node_projects_and_custom_directories() {
+        let cargo_dir = tempfile::tempdir().unwrap();
+        fs::write(cargo_dir.path().join("Cargo.toml"), "[package]\nname=\"x\"").unwrap();
+        let cargo_info =
+            parse_project_info(cargo_dir.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(cargo_info.manager, "cargo");
+        assert!(cargo_info.commands.iter().any(|c| c.cmd == "cargo test"));
+
+        let make_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            make_dir.path().join("Makefile"),
+            ".PHONY: dev build\nVAR := 1\ndev:\n\techo dev\nbuild: dev\n\techo build\n",
+        )
+        .unwrap();
+        let make_info = parse_project_info(make_dir.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(make_info.manager, "make");
+        assert_eq!(
+            make_info.commands,
+            vec![
+                DetectedCommand {
+                    label: "dev".into(),
+                    cmd: "make dev".into()
+                },
+                DetectedCommand {
+                    label: "build".into(),
+                    cmd: "make build".into()
+                },
+            ]
+        );
+
+        let empty_dir = tempfile::tempdir().unwrap();
+        let empty_info =
+            parse_project_info(empty_dir.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(empty_info.manager, "custom");
+        assert!(empty_info.commands.is_empty());
+    }
 }

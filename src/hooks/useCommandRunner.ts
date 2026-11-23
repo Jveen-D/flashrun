@@ -118,9 +118,34 @@ export function useCommandRunner() {
     return true;
   }, [runCommand]);
 
+  const stopProjectCommands = useCallback(async (projectId: string) => {
+    const project = useStore.getState().projects.find((item) => item.id === projectId);
+    if (!project) {
+      return;
+    }
+
+    const targets = project.commands.filter((command) => (
+      command.status === 'running'
+      || command.pid !== null
+      || pendingStarts.has(commandKey(projectId, command.id))
+    ));
+    if (!targets.length) {
+      return;
+    }
+
+    const results = await Promise.allSettled(
+      targets.map((command) => stopCommand(projectId, command.id)),
+    );
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) {
+      throw failed.reason;
+    }
+  }, [stopCommand]);
+
   return {
     runCommand,
     stopCommand,
+    stopProjectCommands,
     restartCommand,
     runDefaultCommand,
   };

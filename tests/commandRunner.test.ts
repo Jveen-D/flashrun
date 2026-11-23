@@ -39,3 +39,23 @@ it('deduplicates overlapping stop requests', async () => {
   await Promise.all([runner.stopCommand('project', 'command'), runner.stopCommand('project', 'command')]);
   expect(mocks.invoke).toHaveBeenCalledTimes(1);
 });
+
+it('stops all running commands in a project before removal', async () => {
+  const first: Command = { id: 'c1', cmd: 'dev', label: 'dev', status: 'running', pid: 101, isDefault: true };
+  const second: Command = { id: 'c2', cmd: 'lint', label: 'lint', status: 'idle', pid: null, isDefault: false };
+  const third: Command = { id: 'c3', cmd: 'watch', label: 'watch', status: 'running', pid: 202, isDefault: false };
+  mocks.state.projects = [{ id: 'project', name: 'project', path: '/test', commands: [first, second, third] }];
+  mocks.state.updateCommand = (_project: string, commandId: string, updates: Partial<Command>) => {
+    const target = [first, second, third].find((item) => item.id === commandId);
+    if (target) Object.assign(target, updates);
+  };
+  mocks.invoke.mockResolvedValue(undefined);
+
+  const { useCommandRunner } = await import('../src/hooks/useCommandRunner');
+  const runner = useCommandRunner();
+  await runner.stopProjectCommands('project');
+
+  expect(mocks.invoke).toHaveBeenCalledWith('kill_command', { pid: 101 });
+  expect(mocks.invoke).toHaveBeenCalledWith('kill_command', { pid: 202 });
+  expect(mocks.invoke).toHaveBeenCalledTimes(2);
+});

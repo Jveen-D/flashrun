@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { Trash2, X } from 'lucide-react';
 import type { Command } from '../store';
 import { useTranslation } from 'react-i18next';
 
@@ -9,6 +9,7 @@ interface CommandConfigModalProps {
   initialCommand?: Command | null;
   onClose: () => void;
   onSubmit: (values: { label: string; cmd: string; isDefault: boolean }) => void;
+  onDelete?: () => void;
 }
 
 export function CommandConfigModal({
@@ -17,6 +18,7 @@ export function CommandConfigModal({
   initialCommand,
   onClose,
   onSubmit,
+  onDelete,
 }: CommandConfigModalProps) {
   const { t } = useTranslation();
   const [label, setLabel] = useState('');
@@ -32,6 +34,22 @@ export function CommandConfigModal({
     setCmd(initialCommand?.cmd ?? '');
     setIsDefault(Boolean(initialCommand?.isDefault));
   }, [initialCommand, open]);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
 
   if (!open) {
     return null;
@@ -54,7 +72,14 @@ export function CommandConfigModal({
   };
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[2px] dark:bg-black/70">
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[2px] dark:bg-black/70"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
       <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-2xl dark:border-slate-700/70 dark:bg-slate-900/95">
         <div className="flex items-start justify-between gap-4 border-b border-slate-200/80 bg-slate-50/90 px-5 py-4 dark:border-slate-800/80 dark:bg-slate-950/50">
           <div>
@@ -123,21 +148,35 @@ export function CommandConfigModal({
             </div>
           </button>
 
-          <div className="flex items-center justify-end gap-2 border-t border-slate-200/80 pt-4 dark:border-slate-800/80">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md border border-slate-200/80 px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700/80 dark:text-slate-300 dark:hover:bg-slate-800"
-            >
-              {t('取消')}
-            </button>
-            <button
-              type="submit"
-              disabled={!label.trim() || !cmd.trim()}
-              className="rounded-md bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {mode === 'create' ? t('创建命令') : t('保存修改')}
-            </button>
+          <div className="flex items-center justify-between gap-2 border-t border-slate-200/80 pt-4 dark:border-slate-800/80">
+            <div>
+              {mode === 'edit' && onDelete && (
+                <button
+                  type="button"
+                  onClick={onDelete}
+                  className="flex items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-600 transition-colors hover:bg-rose-100 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-400 dark:hover:bg-rose-500/20"
+                >
+                  <Trash2 size={14} />
+                  <span>{t('删除命令')}</span>
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-md border border-slate-200/80 px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700/80 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                {t('取消')}
+              </button>
+              <button
+                type="submit"
+                disabled={!label.trim() || !cmd.trim()}
+                className="rounded-md bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {mode === 'create' ? t('创建命令') : t('保存修改')}
+              </button>
+            </div>
           </div>
         </form>
       </div>

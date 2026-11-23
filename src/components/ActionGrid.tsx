@@ -14,15 +14,19 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { useStore, Command } from '../store';
-import { Play, Square, TerminalSquare, Plus, Settings2, RefreshCw, Sparkles } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { confirm } from '@tauri-apps/plugin-dialog';
+import { useStore, type Command, type ProjectInfoPayload } from '../store';
+import { Play, Square, TerminalSquare, Plus, Settings2, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { CommandConfigModal } from './CommandConfigModal';
 import { useCommandRunner } from '../hooks/useCommandRunner';
+import { toast } from '../utils/toast';
 
 interface SortableCommandCardProps {
   command: Command;
   onEdit: (command: Command, event: React.MouseEvent) => void;
+  onDelete: (command: Command, event: React.MouseEvent) => void;
   onRun: (command: Command) => void;
   onStop: (command: Command) => void;
   onRestart: (command: Command) => void;
@@ -33,6 +37,7 @@ interface SortableCommandCardProps {
 function SortableCommandCard({
   command,
   onEdit,
+  onDelete,
   onRun,
   onStop,
   onRestart,
@@ -94,13 +99,26 @@ function SortableCommandCard({
           </p>
         </div>
 
-        <button
-          onClick={(event) => onEdit(command, event)}
-          className="shrink-0 rounded-md border border-transparent p-1.5 text-slate-400 opacity-0 transition-[opacity,color,background-color,border-color] group-hover:opacity-100 hover:border-slate-200/80 hover:bg-white hover:text-slate-600 dark:text-slate-500 dark:hover:border-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-300"
-          title={t('编辑配置')}
-        >
-          <Settings2 size={15} />
-        </button>
+        <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          <button
+            type="button"
+            onClick={(event) => onEdit(command, event)}
+            className="rounded-md border border-transparent p-1.5 text-slate-400 transition-colors hover:border-slate-200/80 hover:bg-white hover:text-slate-600 dark:text-slate-500 dark:hover:border-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+            title={t('编辑配置')}
+            aria-label={t('编辑配置')}
+          >
+            <Settings2 size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={(event) => onDelete(command, event)}
+            className="rounded-md border border-transparent p-1.5 text-slate-400 transition-colors hover:border-rose-200/80 hover:bg-rose-50 hover:text-rose-600 dark:text-slate-500 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
+            title={t('删除命令')}
+            aria-label={t('删除命令')}
+          >
+            <Trash2 size={15} />
+          </button>
+        </div>
       </div>
 
       <div className="mt-3.5 flex items-center justify-between gap-2 border-t border-slate-200/80 pt-3.5 transition-colors dark:border-slate-700/60">
@@ -156,12 +174,19 @@ function SortableCommandCard({
 }
 
 export const ActionGrid: React.FC = () => {
-  const { projects, activeProjectId, addCommand, updateCommand, reorderCommands } = useStore();
+  const projects = useStore((state) => state.projects);
+  const activeProjectId = useStore((state) => state.activeProjectId);
+  const addCommand = useStore((state) => state.addCommand);
+  const updateCommand = useStore((state) => state.updateCommand);
+  const removeCommand = useStore((state) => state.removeCommand);
+  const reorderCommands = useStore((state) => state.reorderCommands);
+  const syncProjectCommands = useStore((state) => state.syncProjectCommands);
   const { runCommand, stopCommand, restartCommand } = useCommandRunner();
 
   const { t } = useTranslation();
   const [editingCommand, setEditingCommand] = useState<Command | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isSyncingScripts, setIsSyncingScripts] = useState(false);
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
   const sensors = useSensors(
@@ -186,7 +211,7 @@ export const ActionGrid: React.FC = () => {
       await runCommand(activeProject.id, command.id);
     } catch (error) {
       console.error(error);
-      alert(t('运行命令失败：{{error}}', { error: String(error) }));
+      toast.error(t('运行命令失败：{{error}}', { error: String(error) }));
     }
   };
 
@@ -195,7 +220,7 @@ export const ActionGrid: React.FC = () => {
       await stopCommand(activeProject.id, command.id);
     } catch (error) {
       console.error(error);
-      alert(t('停止进程失败：{{error}}', { error: String(error) }));
+      toast.error(t('停止进程失败：{{error}}', { error: String(error) }));
     }
   };
 
@@ -204,7 +229,57 @@ export const ActionGrid: React.FC = () => {
       await restartCommand(activeProject.id, command.id);
     } catch (error) {
       console.error(error);
-      alert(t('重启进程失败：{{error}}', { error: String(error) }));
+      toast.error(t('重启进程失败：{{error}}', { error: String(error) }));
+    }
+  };
+
+  const handleDeleteCommand = async (command: Command) => {
+    const isRunning = command.status === 'running';
+    const message = isRunning
+      ? t('命令“{{command}}”正在运行中。删除前将先终止该进程，确定要删除吗？', { command: command.label })
+      : t('确定要删除命令“{{command}}”吗？', { command: command.label });
+    const approved = await confirm(message, {
+      title: t('删除命令'),
+      kind: isRunning ? 'warning' : 'info',
+    });
+    if (!approved) {
+      return;
+    }
+
+    try {
+      if (isRunning) {
+        await stopCommand(activeProject.id, command.id);
+      }
+      removeCommand(activeProject.id, command.id);
+      if (editingCommand?.id === command.id) {
+        setEditingCommand(null);
+      }
+      toast.success(t('已删除命令“{{command}}”。', { command: command.label }));
+    } catch (error) {
+      console.error(error);
+      toast.error(t('删除命令失败：{{error}}', { error: String(error) }));
+    }
+  };
+
+  const handleSyncScripts = async () => {
+    if (isSyncingScripts) {
+      return;
+    }
+
+    setIsSyncingScripts(true);
+    try {
+      const info = await invoke<ProjectInfoPayload>('parse_project_info', { path: activeProject.path });
+      const { added } = syncProjectCommands(activeProject.id, info.manager, info.scripts, info.commands);
+      if (added > 0) {
+        toast.success(t('已同步新增 {{count}} 条脚本命令。', { count: added }));
+      } else {
+        toast.info(t('脚本已是最新，未发现新增命令。'));
+      }
+    } catch (error) {
+      console.error('Failed to sync scripts:', error);
+      toast.error(t('同步脚本失败：{{error}}', { error: String(error) }));
+    } finally {
+      setIsSyncingScripts(false);
     }
   };
 
@@ -263,8 +338,20 @@ export const ActionGrid: React.FC = () => {
               {t('拖动左上角把手可排序；任意命令都可一键设为默认启动。')}
             </p>
           </div>
-          <div className="shrink-0 rounded-md border border-slate-200/80 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-slate-500 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-400">
-            {activeProject.commands.length} {t('条命令')}
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleSyncScripts()}
+              disabled={isSyncingScripts}
+              className="flex items-center gap-1.5 rounded-md border border-slate-200/80 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:border-blue-300 hover:text-blue-600 disabled:cursor-wait disabled:opacity-60 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-300 dark:hover:border-blue-500/40 dark:hover:text-blue-400"
+              title={t('重新扫描项目目录并增量导入新增脚本')}
+            >
+              <RefreshCw size={12} className={isSyncingScripts ? 'animate-spin' : ''} />
+              <span>{t('同步脚本')}</span>
+            </button>
+            <div className="rounded-md border border-slate-200/80 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-slate-500 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-400">
+              {activeProject.commands.length} {t('条命令')}
+            </div>
           </div>
         </div>
 
@@ -278,6 +365,10 @@ export const ActionGrid: React.FC = () => {
                   onEdit={(nextCommand, event) => {
                     event.stopPropagation();
                     setEditingCommand(nextCommand);
+                  }}
+                  onDelete={(nextCommand, event) => {
+                    event.stopPropagation();
+                    void handleDeleteCommand(nextCommand);
                   }}
                   onRun={handleRun}
                   onStop={handleStop}
@@ -311,6 +402,7 @@ export const ActionGrid: React.FC = () => {
         initialCommand={editingCommand}
         onClose={() => setEditingCommand(null)}
         onSubmit={handleEditSubmit}
+        onDelete={editingCommand ? () => void handleDeleteCommand(editingCommand) : undefined}
       />
     </>
   );

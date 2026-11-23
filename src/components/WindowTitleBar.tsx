@@ -4,6 +4,7 @@ import { Minus, Square, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { isMacPlatform } from '../utils/shortcuts';
 import { requestWindowClose } from '../utils/windowClose';
+import { toast } from '../utils/toast';
 
 export const WindowTitleBar: React.FC = () => {
   const { t } = useTranslation();
@@ -48,7 +49,7 @@ export const WindowTitleBar: React.FC = () => {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => void requestWindowClose(appWindow)}
+          onClick={() => void requestWindowClose(appWindow, (error) => toast.error(String(error)))}
           className="group flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#ff5f57] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.14)] transition-transform hover:scale-105"
           title={t('关闭窗口')}
         >
