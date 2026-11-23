@@ -5,6 +5,7 @@ import {
   KeyboardSensor,
   PointerSensor,
   type DragEndEvent,
+  type Modifier,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
@@ -41,6 +42,11 @@ const projectNameClampStyle: React.CSSProperties = {
   overflow: 'hidden',
 };
 
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
+
 function clampSidebarWidth(width: number) {
   return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(width)));
 }
@@ -64,11 +70,13 @@ function SortableProjectItem({ id, onClick, dragLabel, expanded, children }: Sor
     isDragging,
   } = useSortable({ id });
 
+  const lockedTransform = transform ? { ...transform, x: 0 } : null;
+
   return (
     <div
       ref={setNodeRef}
-      className={`group relative flex w-full cursor-pointer items-center justify-center ${isDragging ? 'z-30 opacity-70' : ''}`}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`group relative flex w-full cursor-pointer items-center justify-center ${isDragging ? 'z-30 opacity-80' : ''}`}
+      style={{ transform: CSS.Transform.toString(lockedTransform), transition }}
       onClick={onClick}
     >
       <button
@@ -304,8 +312,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
         </div>
       )}
 
-      <div className={`flex w-full flex-1 flex-col space-y-1.5 overflow-y-auto no-scrollbar pb-4 transition-all duration-300 ${isSidebarExpanded ? 'px-3' : 'items-center px-2'}`}>
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleProjectDragEnd}>
+      <div className={`flex w-full flex-1 flex-col space-y-1.5 overflow-y-auto overflow-x-hidden no-scrollbar pb-4 transition-all duration-300 ${isSidebarExpanded ? 'px-3' : 'items-center px-2'}`}>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          modifiers={[restrictToVerticalAxis]}
+          onDragEnd={handleProjectDragEnd}
+        >
           <SortableContext items={projectIds} strategy={verticalListSortingStrategy}>
           {projects.map((project) => {
           const isActive = project.id === activeProjectId;

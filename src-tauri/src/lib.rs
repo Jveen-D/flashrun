@@ -1228,6 +1228,8 @@ pub fn run() {
             export_text_file,
             read_text_file,
             git::get_git_status,
+            git::git_checkout_branch,
+            git::git_sync_action,
             tray::sync_tray_menu,
         ])
         .build(tauri::generate_context!())
