@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -9,16 +10,17 @@ import { WindowTitleBar } from './components/WindowTitleBar';
 import { TopBar } from './components/TopBar';
 import { ActionGrid } from './components/ActionGrid';
 import { SettingsModal } from './components/SettingsModal';
+import { CommandPalette } from './components/CommandPalette';
 import { ToastContainer } from './components/ToastContainer';
 
 import { flushPersistence, retryPersistence, useStore } from './store';
 import { reconcileShellSessions } from './utils/shellSessions';
-import { guardWindowClose, requestWindowClose } from './utils/windowClose';
+import { forceCloseWindow, guardWindowClose, requestWindowClose } from './utils/windowClose';
 import { useTranslation } from 'react-i18next';
-import { eventMatchesShortcut } from './utils/shortcuts';
+import { eventMatchesShortcut, toGlobalShortcutAccelerator } from './utils/shortcuts';
 import { toast } from './utils/toast';
 import { extractLocalUrls, extractPortConflict } from './utils/logInsights';
-import { consumeManuallyStoppedPid } from './hooks/useCommandRunner';
+import { consumeManuallyStoppedPid, useCommandRunner } from './hooks/useCommandRunner';
 import { useResolvedTheme } from './hooks/useResolvedTheme';
 import {
   appendTerminalOutput,
@@ -72,7 +74,9 @@ function App() {
   const activeCommandByProject = useStore((state) => state.activeCommandByProject);
   const windowState = useStore((state) => state.windowState);
   const setWindowState = useStore((state) => state.setWindowState);
+  const { stopCommand, stopAllCommands } = useCommandRunner();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [isDraggingState, setIsDraggingState] = useState(false);
   const [mountedTerminalProjectIds, setMountedTerminalProjectIds] = useState<string[]>([]);
   const isDragging = useRef(false);
@@ -194,7 +198,103 @@ function App() {
     (error) => window.confirm(
       t('配置尚未保存：{{error}}\n\n是否仍要退出并放弃本次未保存的更改？取消后可重试保存。', { error: String(error) }),
     ),
+    {
+      shouldMinimizeToTray: () => useStore.getState().globalSettings.minimizeToTrayOnClose,
+      hideWindow: () => appWindow.hide(),
+    },
   ), [appWindow, t]);
+
+  // Sync running services into the native system tray menu.
+  useEffect(() => {
+    if (!hydrated) return;
+    const runningItems = projects.flatMap((project) => (
+      project.commands
+        .filter((command) => command.status === 'running')
+        .map((command) => ({
+          projectId: project.id,
+          commandId: command.id,
+          projectName: project.name,
+          commandLabel: command.label,
+        }))
+    ));
+    void invoke('sync_tray_menu', { items: runningItems }).catch((err) => console.warn('Failed to sync tray menu:', err));
+  }, [hydrated, projects]);
+
+  // Listen to native system tray actions.
+  useEffect(() => {
+    const unlistenStop = listen<{ projectId: string; commandId: string }>('tray-stop-command', (event) => {
+      void stopCommand(event.payload.projectId, event.payload.commandId).catch((error) => toast.error(String(error)));
+    });
+    const unlistenStopAll = listen('tray-stop-all', () => {
+      void stopAllCommands().catch((error) => toast.error(String(error)));
+    });
+    const unlistenQuit = listen('tray-quit-requested', () => {
+      void forceCloseWindow(
+        appWindow,
+        flushPersistence,
+        (error) => toast.error(String(error)),
+        (error) => window.confirm(
+          t('配置尚未保存：{{error}}\n\n是否仍要退出并放弃本次未保存的更改？取消后可重试保存。', { error: String(error) }),
+        ),
+      );
+    });
+    return () => {
+      void unlistenStop.then((fn) => fn());
+      void unlistenStopAll.then((fn) => fn());
+      void unlistenQuit.then((fn) => fn());
+    };
+  }, [appWindow, stopAllCommands, stopCommand, t]);
+
+  // Register optional global shortcut to summon / hide FlashRun from anywhere.
+  useEffect(() => {
+    if (!hydrated || !globalSettings.globalWindowShortcut) return undefined;
+    const accelerator = toGlobalShortcutAccelerator(globalSettings.globalWindowShortcut);
+    let active = true;
+    let registeredAccelerator: string | null = null;
+
+    void (async () => {
+      try {
+        const plugin = await import('@tauri-apps/plugin-global-shortcut');
+        if (!active) return;
+        if (await plugin.isRegistered(accelerator)) {
+          await plugin.unregister(accelerator);
+        }
+        await plugin.register(accelerator, async (event) => {
+          if (event.state !== 'Pressed') return;
+          try {
+            const visible = await appWindow.isVisible();
+            const minimized = await appWindow.isMinimized();
+            const focused = await appWindow.isFocused();
+            if (visible && !minimized && focused) {
+              await appWindow.hide();
+            } else {
+              await appWindow.unminimize();
+              await appWindow.show();
+              await appWindow.setFocus();
+            }
+          } catch (error) {
+            console.warn('Global shortcut window toggle failed:', error);
+          }
+        });
+        registeredAccelerator = accelerator;
+      } catch (error) {
+        console.warn('Failed to register global shortcut:', error);
+        if (active) {
+          toast.warning(t('全局快捷键 {{shortcut}} 注册失败：可能已被其他应用占用。', { shortcut: accelerator }));
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (registeredAccelerator) {
+        const toRemove = registeredAccelerator;
+        void import('@tauri-apps/plugin-global-shortcut')
+          .then((plugin) => plugin.unregister(toRemove))
+          .catch(() => {});
+      }
+    };
+  }, [appWindow, globalSettings.globalWindowShortcut, hydrated, t]);
 
   useEffect(() => {
     if (!hydrated || !activeProjectId) return;
@@ -222,6 +322,20 @@ function App() {
   useEffect(() => {
     if (!hydrated) return;
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        !event.repeat
+        && (event.ctrlKey || event.metaKey)
+        && !event.altKey
+        && !event.shiftKey
+        && event.code === 'KeyK'
+        && !(event.target instanceof HTMLElement && event.target.closest('[data-shortcut-recorder="true"]'))
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        setIsPaletteOpen((value) => !value);
+        return;
+      }
+
       if (shouldIgnoreShortcutEvent(event.target)) return;
       if (!eventMatchesShortcut(event, globalSettings.terminalToggleShortcut)) return;
       event.preventDefault();
@@ -332,7 +446,7 @@ function App() {
         {t('配置未保存：{{error}}', { error: persistenceError })}
         <button className="ml-2 underline" onClick={() => void retryPersistence().catch(console.error)}>{t('重试保存')}</button>
       </div>}
-      <WindowTitleBar />
+      <WindowTitleBar onOpenCommandPalette={() => setIsPaletteOpen(true)} />
 
       <div className="flex min-h-0 flex-1 overflow-hidden bg-slate-100/60 dark:bg-[#0B1120]">
         <Sidebar onOpenSettings={handleOpenSettings} />
@@ -407,6 +521,12 @@ function App() {
       <SettingsModal
         open={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+      />
+      <CommandPalette
+        open={isPaletteOpen}
+        onClose={() => setIsPaletteOpen(false)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+        onToggleTerminal={toggleTerminalWithFit}
       />
       <ToastContainer />
     </div>

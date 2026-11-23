@@ -415,13 +415,14 @@ fn open_session(
     rows: u16,
     cols: u16,
 ) -> Result<(Session, Box<dyn std::io::Read + Send>), String> {
-    open_session_with_shell(path, command, None, rows, cols)
+    open_session_with_shell(path, command, None, None, rows, cols)
 }
 
 fn open_session_with_shell(
     path: String,
     command: Option<String>,
     shell_id: Option<String>,
+    env_vars: Option<indexmap::IndexMap<String, String>>,
     rows: u16,
     cols: u16,
 ) -> Result<(Session, Box<dyn std::io::Read + Send>), String> {
@@ -491,6 +492,14 @@ exit $child.ExitCode"#;
     };
     builder.cwd(path);
     builder.env("TERM", "xterm-256color");
+    if let Some(vars) = env_vars {
+        for (key, value) in vars {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() && trimmed != "__FLASHRUN_COMMAND" {
+                builder.env(trimmed, value);
+            }
+        }
+    }
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = Arc::new(Mutex::new(
         pair.master.take_writer().map_err(|e| e.to_string())?,
@@ -563,6 +572,7 @@ impl ProcessManager {
         path: String,
         command: Option<String>,
         shell_id: Option<String>,
+        env_vars: Option<indexmap::IndexMap<String, String>>,
         output: Output,
         rows: u16,
         cols: u16,
@@ -571,7 +581,8 @@ impl ProcessManager {
         if registry.closing {
             return Err("应用正在退出，不能创建新会话。".into());
         }
-        let (session, reader) = open_session_with_shell(path, command, shell_id, rows, cols)?;
+        let (session, reader) =
+            open_session_with_shell(path, command, shell_id, env_vars, rows, cols)?;
         // IPC exposes an opaque handle, not an OS PID.
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let session = Arc::new(session);

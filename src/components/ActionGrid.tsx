@@ -20,18 +20,22 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { useStore, type Command, type CommandRuntimeInfo, type ProjectInfoPayload } from '../store';
 import {
   AlertTriangle,
+  Boxes,
   ExternalLink,
+  Folder,
   Play,
   Plus,
   RefreshCw,
   Settings2,
+  SlidersHorizontal,
   Sparkles,
   Square,
   TerminalSquare,
   Trash2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { CommandConfigModal } from './CommandConfigModal';
+import { CommandConfigModal, type CommandFormValues } from './CommandConfigModal';
+import { WorkspaceImportModal } from './WorkspaceImportModal';
 import { useCommandRunner } from '../hooks/useCommandRunner';
 import { commandOutputKey } from '../utils/terminal';
 import { formatDisplayUrl, formatDuration } from '../utils/logInsights';
@@ -118,6 +122,25 @@ function SortableCommandCard({
           <p className="truncate font-mono text-[11px] text-slate-500 opacity-75 dark:text-slate-400" title={command.cmd}>
             $ {command.cmd}
           </p>
+
+          {(command.cwd || command.envFile || (command.env && Object.keys(command.env).length > 0)) && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              {command.cwd && (
+                <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-600 dark:bg-slate-800 dark:text-slate-400" title={command.cwd}>
+                  <Folder size={9} />
+                  <span>{command.cwd}</span>
+                </span>
+              )}
+              {(command.envFile || (command.env && Object.keys(command.env).length > 0)) && (
+                <span className="inline-flex items-center gap-1 rounded bg-purple-50 px-1.5 py-0.5 font-mono text-[10px] text-purple-600 dark:bg-purple-500/15 dark:text-purple-300">
+                  <SlidersHorizontal size={9} />
+                  <span>
+                    {command.envFile ? command.envFile : `ENV (${Object.keys(command.env ?? {}).length})`}
+                  </span>
+                </span>
+              )}
+            </div>
+          )}
 
           {(runtime?.detectedUrls.length || runtime?.portConflict || (!isRunning && runtime?.lastExitCode !== null && runtime?.lastExitCode !== undefined)) && (
             <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
@@ -267,6 +290,7 @@ export const ActionGrid: React.FC = () => {
   const [editingCommand, setEditingCommand] = useState<Command | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSyncingScripts, setIsSyncingScripts] = useState(false);
+  const [isWorkspaceImportOpen, setIsWorkspaceImportOpen] = useState(false);
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
   const sensors = useSensors(
@@ -387,12 +411,17 @@ export const ActionGrid: React.FC = () => {
     updateCommand(activeProject.id, command.id, { isDefault: true });
   };
 
-  const handleCreateSubmit = (values: { label: string; cmd: string; isDefault: boolean }) => {
-    addCommand(activeProject.id, values.label, values.cmd, { isDefault: values.isDefault });
+  const handleCreateSubmit = (values: CommandFormValues) => {
+    addCommand(activeProject.id, values.label, values.cmd, {
+      isDefault: values.isDefault,
+      cwd: values.cwd,
+      envFile: values.envFile,
+      env: values.env,
+    });
     setIsCreateOpen(false);
   };
 
-  const handleEditSubmit = (values: { label: string; cmd: string; isDefault: boolean }) => {
+  const handleEditSubmit = (values: CommandFormValues) => {
     if (!editingCommand) {
       return;
     }
@@ -401,8 +430,18 @@ export const ActionGrid: React.FC = () => {
       label: values.label,
       cmd: values.cmd,
       isDefault: values.isDefault,
+      cwd: values.cwd,
+      envFile: values.envFile,
+      env: values.env,
     });
     setEditingCommand(null);
+  };
+
+  const handleImportWorkspaceCommands = (items: Array<{ label: string; cmd: string; cwd: string }>) => {
+    for (const item of items) {
+      addCommand(activeProject.id, item.label, item.cmd, { cwd: item.cwd });
+    }
+    toast.success(t('已从 Monorepo 子包导入 {{count}} 条命令。', { count: items.length }));
   };
 
   return (
@@ -419,6 +458,15 @@ export const ActionGrid: React.FC = () => {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsWorkspaceImportOpen(true)}
+              className="flex items-center gap-1.5 rounded-md border border-slate-200/80 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:border-blue-300 hover:text-blue-600 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-300 dark:hover:border-blue-500/40 dark:hover:text-blue-400"
+              title={t('扫描并导入 Monorepo 子包脚本')}
+            >
+              <Boxes size={12} />
+              <span>{t('子包导入')}</span>
+            </button>
             <button
               type="button"
               onClick={() => void handleSyncScripts()}
@@ -497,6 +545,12 @@ export const ActionGrid: React.FC = () => {
         onClose={() => setEditingCommand(null)}
         onSubmit={handleEditSubmit}
         onDelete={editingCommand ? () => void handleDeleteCommand(editingCommand) : undefined}
+      />
+      <WorkspaceImportModal
+        open={isWorkspaceImportOpen}
+        project={activeProject}
+        onClose={() => setIsWorkspaceImportOpen(false)}
+        onImport={handleImportWorkspaceCommands}
       />
     </>
   );

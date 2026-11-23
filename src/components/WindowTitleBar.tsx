@@ -1,12 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Minus, Square, X } from 'lucide-react';
+import { Minus, Search, Square, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { isMacPlatform } from '../utils/shortcuts';
 import { requestWindowClose } from '../utils/windowClose';
 import { toast } from '../utils/toast';
 
-export const WindowTitleBar: React.FC = () => {
+interface WindowTitleBarProps {
+  onOpenCommandPalette?: () => void;
+}
+
+export const WindowTitleBar: React.FC<WindowTitleBarProps> = ({ onOpenCommandPalette }) => {
   const { t } = useTranslation();
   const appWindow = useMemo(() => getCurrentWindow(), []);
   const isMac = useMemo(() => isMacPlatform(), []);
@@ -114,6 +118,21 @@ export const WindowTitleBar: React.FC = () => {
   );
 
 
+  const commandPaletteButton = onOpenCommandPalette ? (
+    <button
+      type="button"
+      onClick={onOpenCommandPalette}
+      className="flex h-6 items-center gap-1.5 rounded-md border border-slate-200/90 bg-white/80 px-2 text-[11px] text-slate-500 transition-colors hover:border-blue-300 hover:text-slate-700 dark:border-slate-700/80 dark:bg-slate-900/80 dark:text-slate-400 dark:hover:border-blue-500/50 dark:hover:text-slate-200"
+      title={t('打开命令面板')}
+    >
+      <Search size={11} />
+      <span className="hidden sm:inline">{t('命令面板')}</span>
+      <kbd className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[9px] text-slate-400 dark:bg-slate-800 dark:text-slate-500">
+        {isMac ? '⌘K' : 'Ctrl K'}
+      </kbd>
+    </button>
+  ) : null;
+
   if (isMac) {
     return (
       <div className="grid h-9 shrink-0 select-none grid-cols-[auto,1fr,auto] items-center gap-2.5 border-b border-slate-200/80 bg-slate-50/90 px-2.5 backdrop-blur dark:border-slate-800/80 dark:bg-slate-950/70">
@@ -127,7 +146,9 @@ export const WindowTitleBar: React.FC = () => {
           {titleContent}
         </div>
 
-        {renderMacControls(true)}
+        <div className="flex shrink-0 items-center gap-2">
+          {commandPaletteButton}
+        </div>
       </div>
     );
   }
@@ -143,6 +164,7 @@ export const WindowTitleBar: React.FC = () => {
         {titleContent}
       </div>
 
+      {commandPaletteButton}
       {windowsControls}
     </div>
   );

@@ -33,7 +33,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const globalSettings = useStore((state) => state.globalSettings);
   const updateGlobalSettings = useStore((state) => state.updateGlobalSettings);
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
-  const [isRecordingShortcut, setIsRecordingShortcut] = useState(false);
+  const [recordingTarget, setRecordingTarget] = useState<'terminal' | 'globalWindow' | null>(null);
   const [recordingMessage, setRecordingMessage] = useState('');
   const [availableShells, setAvailableShells] = useState<ShellOption[]>([
     { id: 'auto', label: 'Auto', available: true },
@@ -42,7 +42,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   useEffect(() => {
     if (!open) {
       setActiveSection('general');
-      setIsRecordingShortcut(false);
+      setRecordingTarget(null);
       setRecordingMessage('');
       return;
     }
@@ -72,8 +72,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       }
 
       event.preventDefault();
-      if (isRecordingShortcut) {
-        setIsRecordingShortcut(false);
+      if (recordingTarget) {
+        setRecordingTarget(null);
         setRecordingMessage('');
         return;
       }
@@ -83,7 +83,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isRecordingShortcut, onClose, open]);
+  }, [recordingTarget, onClose, open]);
 
   const sections = useMemo(() => ([
     {
@@ -108,13 +108,19 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   }
 
   const currentShortcutText = formatShortcut(globalSettings.terminalToggleShortcut);
+  const globalWindowShortcutText = globalSettings.globalWindowShortcut
+    ? formatShortcut(globalSettings.globalWindowShortcut)
+    : t('未设置');
 
-  const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+  const handleShortcutKeyDown = (
+    target: 'terminal' | 'globalWindow',
+    event: React.KeyboardEvent<HTMLButtonElement>,
+  ) => {
     event.preventDefault();
     event.stopPropagation();
 
     if (event.key === 'Escape') {
-      setIsRecordingShortcut(false);
+      setRecordingTarget(null);
       setRecordingMessage('');
       return;
     }
@@ -130,8 +136,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       return;
     }
 
-    updateGlobalSettings({ terminalToggleShortcut: shortcut });
-    setIsRecordingShortcut(false);
+    if (target === 'terminal') {
+      updateGlobalSettings({ terminalToggleShortcut: shortcut });
+    } else {
+      updateGlobalSettings({ globalWindowShortcut: shortcut });
+    }
+    setRecordingTarget(null);
     setRecordingMessage(t('快捷键已更新为 {{shortcut}}', { shortcut: formatShortcut(shortcut) }));
   };
 
@@ -190,6 +200,28 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 dropdownClassName="left-0 mt-2"
               />
             </section>
+
+            <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/50 p-5">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h4 className="text-base font-bold text-slate-900 dark:text-white mb-1">{t('关闭窗口时最小化到系统托盘')}</h4>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">{t('开启后点击关闭按钮将隐藏到系统托盘并保持后台服务运行；默认关闭（直接退出）。')}</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={globalSettings.minimizeToTrayOnClose}
+                  onClick={() => updateGlobalSettings({ minimizeToTrayOnClose: !globalSettings.minimizeToTrayOnClose })}
+                  className={`flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors ${
+                    globalSettings.minimizeToTrayOnClose ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'
+                  }`}
+                >
+                  <div className={`h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+                    globalSettings.minimizeToTrayOnClose ? 'translate-x-5' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
+            </section>
           </div>
         );
       case 'editor':
@@ -247,7 +279,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                     onClick={() => {
                       updateGlobalSettings({ terminalToggleShortcut: getDefaultTerminalShortcut() });
                       setRecordingMessage(t('已恢复默认快捷键。'));
-                      setIsRecordingShortcut(false);
+                      setRecordingTarget(null);
                     }}
                     className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                   >
@@ -257,17 +289,60 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                     type="button"
                     data-shortcut-recorder="true"
                     onClick={() => {
-                      setIsRecordingShortcut(true);
+                      setRecordingTarget('terminal');
                       setRecordingMessage(t('开始监听，请按下新的组合键。按 Esc 取消。'));
                     }}
-                    onKeyDown={isRecordingShortcut ? handleShortcutKeyDown : undefined}
+                    onKeyDown={recordingTarget === 'terminal' ? (event) => handleShortcutKeyDown('terminal', event) : undefined}
                     className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
-                      isRecordingShortcut
+                      recordingTarget === 'terminal'
                         ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                         : 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90'
                     }`}
                   >
-                    {isRecordingShortcut ? t('正在监听...') : t('录制快捷键')}
+                    {recordingTarget === 'terminal' ? t('正在监听...') : t('录制快捷键')}
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/50 p-5">
+              <h4 className="text-base font-bold text-slate-900 dark:text-white mb-1">{t('全局呼出/隐藏窗口快捷键')}</h4>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mb-5">{t('在系统任意应用前台按下此组合键，快速呼出或隐藏 FlashRun 窗口。')}</p>
+              <div className="flex items-start justify-between gap-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-4 py-4">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('当前绑定')}</div>
+                  <div className="text-2xl font-black tracking-tight text-blue-600 dark:text-blue-400 mt-1">{globalWindowShortcutText}</div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">{t('建议使用 Ctrl + Alt + F 或 Alt + Space 等不易冲突的系统级组合。')}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {globalSettings.globalWindowShortcut && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateGlobalSettings({ globalWindowShortcut: null });
+                        setRecordingMessage(t('已清除全局呼出快捷键。'));
+                        setRecordingTarget(null);
+                      }}
+                      className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                    >
+                      {t('清除绑定')}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-shortcut-recorder="true"
+                    onClick={() => {
+                      setRecordingTarget('globalWindow');
+                      setRecordingMessage(t('开始监听，请按下新的组合键。按 Esc 取消。'));
+                    }}
+                    onKeyDown={recordingTarget === 'globalWindow' ? (event) => handleShortcutKeyDown('globalWindow', event) : undefined}
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                      recordingTarget === 'globalWindow'
+                        ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
+                        : 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90'
+                    }`}
+                  >
+                    {recordingTarget === 'globalWindow' ? t('正在监听...') : t('录制快捷键')}
                   </button>
                 </div>
               </div>

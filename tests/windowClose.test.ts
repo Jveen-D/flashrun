@@ -122,4 +122,19 @@ describe('window close using the Tauri SDK', () => {
     await vi.waitFor(() => expect(report).toHaveBeenCalledWith(new Error('listen failed')));
     dispose();
   });
+
+  it('hides the window instead of destroying when minimize-to-tray is enabled', async () => {
+    const { appWindow, dispatch } = fixture();
+    const flush = vi.fn().mockResolvedValue(undefined);
+    const hideWindow = vi.fn().mockResolvedValue(undefined);
+    const dispose = guardWindowClose(appWindow, flush, vi.fn(), vi.fn(), {
+      shouldMinimizeToTray: () => true,
+      hideWindow,
+    });
+    await dispatch();
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(hideWindow).toHaveBeenCalledTimes(1);
+    expect(ipc.invoke).not.toHaveBeenCalled();
+    dispose();
+  });
 });

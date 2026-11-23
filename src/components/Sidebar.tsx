@@ -16,13 +16,14 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { areProjectPathsEqual, useStore, type Project, type ProjectInfoPayload } from '../store';
+import { areProjectPathsEqual, useStore, type LaunchGroup, type Project, type ProjectInfoPayload } from '../store';
 import { useTranslation } from 'react-i18next';
-import { FolderKanban, GripVertical, PanelLeft, PanelLeftClose, Play, Plus, Settings, Square, Trash2 } from 'lucide-react';
+import { FolderKanban, GripVertical, Layers, PanelLeft, PanelLeftClose, Pencil, Play, Plus, Settings, Square, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { confirm, open } from '@tauri-apps/plugin-dialog';
 import logoUrl from '../assets/logo.jpg';
 import { useCommandRunner } from '../hooks/useCommandRunner';
+import { LaunchGroupModal } from './LaunchGroupModal';
 import { toast } from '../utils/toast';
 
 interface SidebarProps {
@@ -88,20 +89,30 @@ function SortableProjectItem({ id, onClick, dragLabel, expanded, children }: Sor
 
 export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
   const projects = useStore((state) => state.projects);
+  const launchGroups = useStore((state) => state.launchGroups);
   const activeProjectId = useStore((state) => state.activeProjectId);
   const setActiveProject = useStore((state) => state.setActiveProject);
   const addProject = useStore((state) => state.addProject);
   const removeProject = useStore((state) => state.removeProject);
+  const addLaunchGroup = useStore((state) => state.addLaunchGroup);
+  const updateLaunchGroup = useStore((state) => state.updateLaunchGroup);
+  const removeLaunchGroup = useStore((state) => state.removeLaunchGroup);
   const isSidebarExpanded = useStore((state) => state.isSidebarExpanded);
   const setSidebarExpanded = useStore((state) => state.setSidebarExpanded);
   const sidebarWidth = useStore((state) => state.sidebarWidth);
   const setSidebarWidth = useStore((state) => state.setSidebarWidth);
   const reorderProjects = useStore((state) => state.reorderProjects);
-  const { runDefaultCommand, stopCommand, stopProjectCommands } = useCommandRunner();
+  const { runDefaultCommand, stopCommand, stopProjectCommands, stopAllCommands, runLaunchGroup, stopLaunchGroup } = useCommandRunner();
   const { t } = useTranslation();
   const asideRef = React.useRef<HTMLElement | null>(null);
   const [isResizing, setIsResizing] = React.useState(false);
   const [liveSidebarWidth, setLiveSidebarWidth] = React.useState(sidebarWidth);
+  const [isGroupModalOpen, setIsGroupModalOpen] = React.useState(false);
+  const [editingGroup, setEditingGroup] = React.useState<LaunchGroup | null>(null);
+  const totalRunningCount = React.useMemo(
+    () => projects.reduce((sum, project) => sum + project.commands.filter((command) => command.status === 'running').length, 0),
+    [projects],
+  );
   const renderedSidebarWidth = `${isSidebarExpanded ? liveSidebarWidth : COLLAPSED_SIDEBAR_WIDTH}px`;
   const projectIds = React.useMemo(() => projects.map((project) => project.id), [projects]);
   const sensors = useSensors(
@@ -273,6 +284,26 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
         <div className="h-px w-full rounded-full bg-slate-200/90 dark:bg-slate-800/90" />
       </div>
 
+      {totalRunningCount > 0 && isSidebarExpanded && (
+        <div className="mb-2.5 shrink-0 px-3">
+          <div className="flex items-center justify-between rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-2.5 py-1.5 text-xs dark:border-emerald-500/25 dark:bg-emerald-500/10">
+            <div className="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-300">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span>{t('运行中 ({{count}})', { count: totalRunningCount })}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void stopAllCommands().then(() => toast.info(t('已停止全部运行中服务。'))).catch((error) => toast.error(t('停止进程失败：{{error}}', { error: String(error) })))}
+              className="flex items-center gap-1 rounded-md bg-rose-500/10 px-2 py-0.5 text-[11px] font-semibold text-rose-600 transition-colors hover:bg-rose-500 hover:text-white dark:text-rose-400 dark:hover:bg-rose-500 dark:hover:text-white"
+              title={t('停止所有正在运行的命令')}
+            >
+              <Square size={9} className="fill-current" />
+              <span>{t('全部停止')}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className={`flex w-full flex-1 flex-col space-y-1.5 overflow-y-auto no-scrollbar pb-4 transition-all duration-300 ${isSidebarExpanded ? 'px-3' : 'items-center px-2'}`}>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleProjectDragEnd}>
           <SortableContext items={projectIds} strategy={verticalListSortingStrategy}>
@@ -435,7 +466,120 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
             <span className={`overflow-hidden whitespace-nowrap text-sm font-semibold text-slate-500 transition-all group-hover:text-emerald-600 dark:text-slate-400 dark:group-hover:text-emerald-400 ${isSidebarExpanded ? 'ml-3 w-auto opacity-100' : 'ml-0 w-0 opacity-0'}`}>{t('接入新项目')}</span>
           </button>
         </div>
+
+        {isSidebarExpanded && projects.length > 0 && (
+          <div className="mt-4 pt-3 border-t border-slate-200/80 dark:border-slate-800/80">
+            <div className="mb-2 flex items-center justify-between px-1">
+              <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500">
+                <Layers size={12} />
+                {t('启动组')}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingGroup(null);
+                  setIsGroupModalOpen(true);
+                }}
+                className="flex h-5 w-5 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white hover:text-blue-600 dark:hover:bg-slate-800 dark:hover:text-blue-400"
+                title={t('新建启动组')}
+              >
+                <Plus size={13} />
+              </button>
+            </div>
+            {launchGroups.length === 0 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingGroup(null);
+                  setIsGroupModalOpen(true);
+                }}
+                className="w-full rounded-lg border border-dashed border-slate-300/80 px-2.5 py-2 text-left text-[11px] text-slate-400 transition-colors hover:border-blue-400 hover:text-blue-500 dark:border-slate-700/80 dark:text-slate-500 dark:hover:border-blue-500/50 dark:hover:text-blue-400"
+              >
+                {t('+ 编排跨项目联调启动组')}
+              </button>
+            ) : (
+              <div className="space-y-1">
+                {launchGroups.map((group) => {
+                  const runningInGroup = group.items.filter((item) => {
+                    const proj = projects.find((p) => p.id === item.projectId);
+                    return proj?.commands.some((c) => c.id === item.commandId && c.status === 'running');
+                  }).length;
+                  const anyRunning = runningInGroup > 0;
+                  return (
+                    <div
+                      key={group.id}
+                      className="group flex items-center justify-between rounded-lg border border-slate-200/70 bg-white/70 px-2.5 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900/50"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-slate-700 dark:text-slate-200">{group.name}</div>
+                        <div className="font-mono text-[10px] text-slate-400">
+                          {runningInGroup}/{group.items.length} {t('运行中')}
+                        </div>
+                      </div>
+                      <div className="ml-1.5 flex shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingGroup(group);
+                            setIsGroupModalOpen(true);
+                          }}
+                          className="flex h-6 w-6 items-center justify-center rounded text-slate-400 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                          title={t('编辑启动组')}
+                        >
+                          <Pencil size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const action = anyRunning
+                              ? stopLaunchGroup(group.id)
+                              : runLaunchGroup(group.id).then(() => {});
+                            void action.catch((error) => toast.error(String(error)));
+                          }}
+                          className={`flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
+                            anyRunning
+                              ? 'border-rose-500 bg-rose-500 text-white hover:bg-rose-400'
+                              : 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400'
+                          }`}
+                          title={anyRunning ? t('停止启动组') : t('启动此分组')}
+                        >
+                          {anyRunning ? <Square size={10} className="fill-current" /> : <Play size={10} className="ml-[1px] fill-current" />}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      <LaunchGroupModal
+        open={isGroupModalOpen}
+        initialGroup={editingGroup}
+        onClose={() => {
+          setIsGroupModalOpen(false);
+          setEditingGroup(null);
+        }}
+        onSubmit={(values) => {
+          if (editingGroup) {
+            updateLaunchGroup(editingGroup.id, values);
+            toast.success(t('已更新启动组“{{name}}”。', { name: values.name }));
+          } else {
+            addLaunchGroup(values.name, values.items);
+            toast.success(t('已创建启动组“{{name}}”。', { name: values.name }));
+          }
+          setIsGroupModalOpen(false);
+          setEditingGroup(null);
+        }}
+        onDelete={editingGroup ? () => {
+          removeLaunchGroup(editingGroup.id);
+          toast.info(t('已删除启动组“{{name}}”。', { name: editingGroup.name }));
+          setIsGroupModalOpen(false);
+          setEditingGroup(null);
+        } : undefined}
+      />
 
       <div className={`mt-auto w-full shrink-0 border-t border-slate-200/80 pt-4 transition-all dark:border-slate-800/80 ${isSidebarExpanded ? 'px-4' : 'flex justify-center px-2'}`}>
         <button

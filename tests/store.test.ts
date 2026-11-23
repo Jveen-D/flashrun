@@ -21,6 +21,8 @@ describe('configuration protection', () => {
       theme: 'light',
       language: 'en',
       terminalToggleShortcut: expect.any(Object),
+      minimizeToTrayOnClose: false,
+      globalWindowShortcut: null,
     });
     expect(state.activeProjectId).toBe('project');
     expect(state.projectTerminals.project.activeTabId).toBe('shell');
@@ -143,5 +145,36 @@ describe('configuration protection', () => {
         }),
       }),
     });
+  });
+  it('persists command cwd/env/envFile and prunes launch groups when commands are deleted', async () => {
+    mocks.invoke.mockResolvedValue(null);
+    const { useStore, flushPersistence } = await import('../src/store');
+    await useStore.getState().hydrate();
+    const { projectId } = useStore.getState().addProject('/workspace/mono', 'pnpm', { dev: 'vite' });
+    useStore.getState().addCommand(projectId, 'api', 'pnpm run dev', {
+      cwd: 'apps/api',
+      envFile: '.env.local',
+      env: { PORT: '4000' },
+    });
+
+    const project = useStore.getState().projects[0];
+    const apiCmd = project.commands.find((c) => c.label === 'api')!;
+    expect(apiCmd.cwd).toBe('apps/api');
+    expect(apiCmd.envFile).toBe('.env.local');
+    expect(apiCmd.env).toEqual({ PORT: '4000' });
+
+    const groupId = useStore.getState().addLaunchGroup('Fullstack', [
+      { projectId, commandId: project.commands[0].id },
+      { projectId, commandId: apiCmd.id },
+    ]);
+    expect(groupId).toBeTruthy();
+    expect(useStore.getState().launchGroups[0].items).toHaveLength(2);
+
+    useStore.getState().removeCommand(projectId, apiCmd.id);
+    expect(useStore.getState().launchGroups[0].items).toHaveLength(1);
+
+    useStore.getState().removeProject(projectId);
+    expect(useStore.getState().launchGroups).toHaveLength(0);
+    await flushPersistence();
   });
 });

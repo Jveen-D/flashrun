@@ -65,6 +65,9 @@ export function useCommandRunner() {
         commandLabel: command.label,
         rows,
         cols,
+        ...(command.cwd ? { cwd: command.cwd } : {}),
+        ...(command.env && Object.keys(command.env).length > 0 ? { envVars: command.env } : {}),
+        ...(command.envFile ? { envFile: command.envFile } : {}),
       });
       pendingStarts.set(key, pending);
       const pid = await pending;
@@ -162,11 +165,64 @@ export function useCommandRunner() {
     }
   }, [stopCommand]);
 
+  const stopAllCommands = useCallback(async () => {
+    const projects = useStore.getState().projects;
+    const results = await Promise.allSettled(
+      projects.map((project) => stopProjectCommands(project.id)),
+    );
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) {
+      throw failed.reason;
+    }
+  }, [stopProjectCommands]);
+
+  const runLaunchGroup = useCallback(async (groupId: string) => {
+    const group = useStore.getState().launchGroups.find((item) => item.id === groupId);
+    if (!group || !group.items.length) {
+      return 0;
+    }
+
+    let started = 0;
+    const results = await Promise.allSettled(
+      group.items.map(async (item) => {
+        const { command } = resolveProjectCommand(item.projectId, item.commandId);
+        if (!command || command.status === 'running') {
+          return;
+        }
+        await runCommand(item.projectId, item.commandId);
+        started += 1;
+      }),
+    );
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) {
+      throw failed.reason;
+    }
+    return started;
+  }, [runCommand]);
+
+  const stopLaunchGroup = useCallback(async (groupId: string) => {
+    const group = useStore.getState().launchGroups.find((item) => item.id === groupId);
+    if (!group || !group.items.length) {
+      return;
+    }
+
+    const results = await Promise.allSettled(
+      group.items.map((item) => stopCommand(item.projectId, item.commandId)),
+    );
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) {
+      throw failed.reason;
+    }
+  }, [stopCommand]);
+
   return {
     runCommand,
     stopCommand,
     stopProjectCommands,
+    stopAllCommands,
     restartCommand,
     runDefaultCommand,
+    runLaunchGroup,
+    stopLaunchGroup,
   };
 }

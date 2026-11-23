@@ -10,13 +10,35 @@ vi.mock('../src/components/Sidebar', () => ({ Sidebar: () => 'PROJECT_SIDEBAR' }
 vi.mock('../src/components/TopBar', () => ({ TopBar: () => 'PROJECT_TOOLBAR' }));
 vi.mock('../src/components/ActionGrid', () => ({ ActionGrid: () => 'PROJECT_COMMANDS' }));
 vi.mock('../src/components/SettingsModal', () => ({ SettingsModal: () => null }));
+vi.mock('../src/components/CommandPalette', () => ({ CommandPalette: () => null }));
 vi.mock('../src/components/ToastContainer', () => ({ ToastContainer: () => null }));
+vi.mock('../src/hooks/useCommandRunner', () => ({
+  consumeManuallyStoppedPid: () => false,
+  useCommandRunner: () => ({
+    runCommand: vi.fn(),
+    stopCommand: vi.fn(),
+    stopProjectCommands: vi.fn(),
+    stopAllCommands: vi.fn(),
+    restartCommand: vi.fn(),
+    runDefaultCommand: vi.fn(),
+    runLaunchGroup: vi.fn(),
+    stopLaunchGroup: vi.fn(),
+  }),
+}));
 vi.mock('../src/store', () => {
   const state = {
     projects: [{ id: 'project', name: 'Example', commands: [] }],
+    launchGroups: [],
     activeProjectId: 'project',
     activeCommandByProject: {},
-    globalSettings: { theme: 'light', language: 'en' },
+    globalSettings: {
+      theme: 'light',
+      language: 'en',
+      defaultEditor: 'code',
+      defaultShell: 'auto',
+      minimizeToTrayOnClose: false,
+      globalWindowShortcut: null,
+    },
     hydrated: true,
     hydrationError: null,
     persistenceError: null,

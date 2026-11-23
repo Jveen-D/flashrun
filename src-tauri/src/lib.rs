@@ -10,6 +10,7 @@ use tauri::Manager;
 mod config;
 mod ports;
 mod sessions;
+mod tray;
 use sessions::{Output, ProcessManager};
 
 const CONFIG_FILE_NAME: &str = "flashrun-config.json";
@@ -398,6 +399,255 @@ async fn save_app_config(
         .map_err(|e| e.to_string())?
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspacePackage {
+    name: String,
+    relative_path: String,
+    manager: String,
+    scripts: IndexMap<String, String>,
+}
+
+fn parse_dotenv(content: &str) -> IndexMap<String, String> {
+    let mut vars = IndexMap::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").map(str::trim).unwrap_or(line);
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let raw_val = value.trim();
+        let parsed = if (raw_val.starts_with('"') && raw_val.ends_with('"') && raw_val.len() >= 2)
+            || (raw_val.starts_with('\'') && raw_val.ends_with('\'') && raw_val.len() >= 2)
+        {
+            raw_val[1..raw_val.len() - 1].to_string()
+        } else {
+            raw_val
+                .split(" #")
+                .next()
+                .unwrap_or(raw_val)
+                .trim()
+                .to_string()
+        };
+        vars.insert(key.to_string(), parsed);
+    }
+    vars
+}
+
+fn resolve_command_cwd(project_root: &Path, cwd: Option<&str>) -> Result<PathBuf, String> {
+    let target = match cwd.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(sub) => {
+            let sub_path = Path::new(sub);
+            if sub_path.is_absolute() {
+                sub_path.to_path_buf()
+            } else {
+                project_root.join(sub_path)
+            }
+        }
+        None => project_root.to_path_buf(),
+    };
+    if !target.is_dir() {
+        return Err(format!("工作目录不存在：{}", target.display()));
+    }
+    Ok(target)
+}
+
+fn resolve_command_env(
+    project_root: &Path,
+    effective_cwd: &Path,
+    env_file: Option<&str>,
+    env_vars: Option<IndexMap<String, String>>,
+) -> Result<Option<IndexMap<String, String>>, String> {
+    let mut merged = IndexMap::new();
+
+    if let Some(raw_file) = env_file.map(str::trim).filter(|value| !value.is_empty()) {
+        let candidate = Path::new(raw_file);
+        let file_path = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            let in_cwd = effective_cwd.join(candidate);
+            if in_cwd.is_file() {
+                in_cwd
+            } else {
+                project_root.join(candidate)
+            }
+        };
+        let content = fs::read_to_string(&file_path)
+            .map_err(|e| format!("读取环境变量文件 {} 失败: {}", file_path.display(), e))?;
+        for (k, v) in parse_dotenv(&content) {
+            merged.insert(k, v);
+        }
+    }
+
+    if let Some(explicit) = env_vars {
+        for (k, v) in explicit {
+            let key = k.trim();
+            if !key.is_empty() {
+                merged.insert(key.to_string(), v);
+            }
+        }
+    }
+
+    if merged.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(merged))
+    }
+}
+
+fn parse_pnpm_workspace_patterns(content: &str) -> Vec<String> {
+    let mut patterns = Vec::new();
+    let mut in_packages = false;
+    for raw_line in content.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !raw_line.starts_with(' ') && !raw_line.starts_with('\t') {
+            in_packages = trimmed.starts_with("packages:");
+            continue;
+        }
+        if in_packages {
+            if let Some(item) = trimmed.strip_prefix('-') {
+                let cleaned = item
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim_end_matches('/')
+                    .to_string();
+                if !cleaned.is_empty() && !cleaned.starts_with('!') {
+                    patterns.push(cleaned);
+                }
+            }
+        }
+    }
+    patterns
+}
+
+fn parse_package_json_workspace_patterns(root: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(root.join("package.json")) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    let Some(workspaces) = value.get("workspaces") else {
+        return Vec::new();
+    };
+    let list = workspaces
+        .as_array()
+        .or_else(|| workspaces.get("packages").and_then(|v| v.as_array()));
+    let Some(list) = list else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|item| item.as_str())
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty() && !s.starts_with('!'))
+        .collect()
+}
+
+fn expand_workspace_pattern(root: &Path, pattern: &str) -> Vec<PathBuf> {
+    let normalized = pattern.trim_matches('/');
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+    if let Some(prefix) = normalized.strip_suffix("/*") {
+        let base = if prefix.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(prefix)
+        };
+        let Ok(entries) = fs::read_dir(&base) else {
+            return Vec::new();
+        };
+        let mut dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir() && path.join("package.json").is_file())
+            .collect();
+        dirs.sort();
+        return dirs;
+    }
+    if !normalized.contains('*') {
+        let dir = root.join(normalized);
+        if dir.is_dir() && dir.join("package.json").is_file() {
+            return vec![dir];
+        }
+    }
+    Vec::new()
+}
+
+#[tauri::command]
+fn detect_workspace_packages(path: String) -> Result<Vec<WorkspacePackage>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err("项目目录不存在或无法访问。".into());
+    }
+
+    let mut patterns = Vec::new();
+    let pnpm_ws = root.join("pnpm-workspace.yaml");
+    if pnpm_ws.is_file() {
+        if let Ok(content) = fs::read_to_string(&pnpm_ws) {
+            patterns.extend(parse_pnpm_workspace_patterns(&content));
+        }
+    }
+    if patterns.is_empty() {
+        patterns.extend(parse_package_json_workspace_patterns(root));
+    }
+
+    let root_manager = detect_node_manager(root, None).to_string();
+    let mut seen = std::collections::HashSet::new();
+    let mut packages = Vec::new();
+
+    for pattern in patterns {
+        for pkg_dir in expand_workspace_pattern(root, &pattern) {
+            let Ok(rel) = pkg_dir.strip_prefix(root) else {
+                continue;
+            };
+            let relative_path = rel.to_string_lossy().replace('\\', "/");
+            if !seen.insert(relative_path.clone()) {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(pkg_dir.join("package.json")) else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+                continue;
+            };
+            let scripts: IndexMap<String, String> = json
+                .get("scripts")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            if scripts.is_empty() {
+                continue;
+            }
+            let name = json
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| relative_path.clone());
+            packages.push(WorkspacePackage {
+                name,
+                relative_path,
+                manager: root_manager.clone(),
+                scripts,
+            });
+        }
+    }
+
+    Ok(packages)
+}
+
 fn normalize_pty_dimensions(rows: Option<u16>, cols: Option<u16>) -> (u16, u16) {
     let rows = rows.filter(|&r| (1..=1000).contains(&r)).unwrap_or(24);
     let cols = cols.filter(|&c| (1..=1000).contains(&c)).unwrap_or(80);
@@ -417,15 +667,23 @@ async fn run_command(
     command_label: String,
     rows: Option<u16>,
     cols: Option<u16>,
+    cwd: Option<String>,
+    env_vars: Option<IndexMap<String, String>>,
+    env_file: Option<String>,
 ) -> Result<u32, String> {
     let manager = state.inner().clone();
     let (rows, cols) = normalize_pty_dimensions(rows, cols);
     tauri::async_runtime::spawn_blocking(move || {
+        let project_root = PathBuf::from(&path);
+        let effective_cwd = resolve_command_cwd(&project_root, cwd.as_deref())?;
+        let merged_env =
+            resolve_command_env(&project_root, &effective_cwd, env_file.as_deref(), env_vars)?;
         manager.spawn(
             app,
-            path,
+            effective_cwd.to_string_lossy().into_owned(),
             Some(cmd),
             None,
+            merged_env,
             Output::Command {
                 project_id,
                 command_id: cmd_id,
@@ -493,6 +751,7 @@ async fn create_shell_session(
             working_dir,
             None,
             shell,
+            None,
             Output::Shell(session_id),
             rows,
             cols,
@@ -934,6 +1193,7 @@ pub fn run() {
         .setup(|app| {
             let path = config_file_path().map_err(std::io::Error::other)?;
             app.manage(config::ConfigFile::new(path));
+            tray::setup_tray(app.handle())?;
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -941,6 +1201,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             parse_project_info,
+            detect_workspace_packages,
             load_app_config,
             save_app_config,
             run_command,
@@ -953,6 +1214,7 @@ pub fn run() {
             ports::inspect_port,
             open_in_editor,
             export_text_file,
+            tray::sync_tray_menu,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -1059,5 +1321,55 @@ mod tests {
         assert_eq!(normalize_pty_dimensions(None, None), (24, 80));
         assert_eq!(normalize_pty_dimensions(Some(0), Some(1200)), (24, 80));
         assert_eq!(normalize_pty_dimensions(Some(42), Some(140)), (42, 140));
+    }
+
+    #[test]
+    fn parses_dotenv_and_merges_with_explicit_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".env.local"),
+            "# comment\nPORT=4000\nexport API_URL=\"http://localhost:8080\"\nQUOTED='hello world'\n",
+        )
+        .unwrap();
+        let mut overrides = IndexMap::new();
+        overrides.insert("PORT".into(), "5000".into());
+
+        let merged =
+            resolve_command_env(dir.path(), dir.path(), Some(".env.local"), Some(overrides))
+                .unwrap()
+                .unwrap();
+        assert_eq!(merged.get("PORT").map(String::as_str), Some("5000"));
+        assert_eq!(
+            merged.get("API_URL").map(String::as_str),
+            Some("http://localhost:8080")
+        );
+        assert_eq!(
+            merged.get("QUOTED").map(String::as_str),
+            Some("hello world")
+        );
+    }
+
+    #[test]
+    fn detects_pnpm_monorepo_workspace_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("apps/web")).unwrap();
+        fs::write(
+            dir.path().join("apps/web/package.json"),
+            r#"{"name":"@demo/web","scripts":{"dev":"vite","build":"vite build"}}"#,
+        )
+        .unwrap();
+
+        let pkgs = detect_workspace_packages(dir.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "@demo/web");
+        assert_eq!(pkgs[0].relative_path, "apps/web");
+        assert_eq!(pkgs[0].manager, "pnpm");
+        assert!(pkgs[0].scripts.contains_key("dev"));
     }
 }

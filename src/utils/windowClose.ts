@@ -5,6 +5,11 @@ const confirmUnsavedExit = (error: unknown) => window.confirm(
   `配置尚未保存：${String(error)}\n\n是否仍要退出并放弃本次未保存的更改？取消后可重试保存。`,
 );
 
+export interface GuardWindowCloseOptions {
+  shouldMinimizeToTray?: () => boolean;
+  hideWindow?: () => Promise<void>;
+}
+
 export async function requestWindowClose(
   appWindow: Pick<Window, 'close'>,
   reportError: (error: unknown) => void = reportCloseError,
@@ -16,11 +21,30 @@ export async function requestWindowClose(
   }
 }
 
+export async function forceCloseWindow(
+  appWindow: Pick<Window, 'destroy'>,
+  flush: () => Promise<void>,
+  reportError: (error: unknown) => void = reportCloseError,
+  confirmDiscard: (error: unknown) => boolean | Promise<boolean> = confirmUnsavedExit,
+) {
+  try {
+    try {
+      await flush();
+    } catch (error) {
+      if (!await confirmDiscard(error)) return;
+    }
+    await appWindow.destroy();
+  } catch (error) {
+    reportError(error);
+  }
+}
+
 export function guardWindowClose(
   appWindow: Pick<Window, 'onCloseRequested' | 'destroy'>,
   flush: () => Promise<void>,
   reportError: (error: unknown) => void = reportCloseError,
   confirmDiscard: (error: unknown) => boolean | Promise<boolean> = confirmUnsavedExit,
+  options?: GuardWindowCloseOptions,
 ) {
   let disposed = false;
   let pending = false;
@@ -32,6 +56,18 @@ export function guardWindowClose(
     if (disposed || pending) return;
     pending = true;
     try {
+      if (options?.shouldMinimizeToTray?.() && options.hideWindow) {
+        try {
+          await flush();
+        } catch {
+          // Persistence errors remain surfaced in the UI banner; still allow hiding.
+        }
+        if (!disposed) {
+          await options.hideWindow();
+        }
+        return;
+      }
+
       try {
         await flush();
       } catch (error) {

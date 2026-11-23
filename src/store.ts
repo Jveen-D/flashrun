@@ -47,6 +47,9 @@ export interface Command {
   status: 'idle' | 'running';
   pid: number | null;
   isDefault: boolean;
+  cwd?: string;
+  env?: Record<string, string>;
+  envFile?: string;
 }
 
 export interface Project {
@@ -58,12 +61,25 @@ export interface Project {
   defaultEditor?: EditorKey;
 }
 
+export interface LaunchGroupItem {
+  projectId: string;
+  commandId: string;
+}
+
+export interface LaunchGroup {
+  id: string;
+  name: string;
+  items: LaunchGroupItem[];
+}
+
 export interface GlobalSettings {
   defaultEditor: EditorKey;
   defaultShell: string;
   theme: 'dark' | 'light' | 'system';
   language: 'zh' | 'en';
   terminalToggleShortcut: ShortcutDefinition;
+  minimizeToTrayOnClose: boolean;
+  globalWindowShortcut: ShortcutDefinition | null;
 }
 
 export interface WindowStatePreference {
@@ -98,6 +114,7 @@ interface UiPreferences {
 
 interface PersistedState {
   projects: Project[];
+  launchGroups: LaunchGroup[];
   activeProjectId: string | null;
   settings: GlobalSettings;
   uiPreferences: UiPreferences;
@@ -109,6 +126,8 @@ const DEFAULT_SETTINGS: GlobalSettings = {
   theme: 'system',
   language: 'zh',
   terminalToggleShortcut: getDefaultTerminalShortcut(),
+  minimizeToTrayOnClose: false,
+  globalWindowShortcut: null,
 };
 
 const MIN_TERMINAL_HEIGHT = 150;
@@ -161,6 +180,20 @@ function clampSidebarWidth(width: number | null | undefined): number {
   return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, normalized));
 }
 
+function sanitizeEnvRecord(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const trimmedKey = key.trim();
+    if (trimmedKey && typeof value === 'string') {
+      result[trimmedKey] = value;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 function sanitizeCommand(command: Partial<Command> | null | undefined): Command | null {
   const label = typeof command?.label === 'string' ? command.label.trim() : '';
   const cmd = typeof command?.cmd === 'string' ? command.cmd.trim() : '';
@@ -169,6 +202,10 @@ function sanitizeCommand(command: Partial<Command> | null | undefined): Command 
     return null;
   }
 
+  const cwd = typeof command?.cwd === 'string' && command.cwd.trim() ? command.cwd.trim() : undefined;
+  const envFile = typeof command?.envFile === 'string' && command.envFile.trim() ? command.envFile.trim() : undefined;
+  const env = sanitizeEnvRecord(command?.env);
+
   return {
     id: typeof command?.id === 'string' && command.id ? command.id : nanoid(),
     label,
@@ -176,6 +213,9 @@ function sanitizeCommand(command: Partial<Command> | null | undefined): Command 
     status: 'idle',
     pid: null,
     isDefault: Boolean(command?.isDefault),
+    ...(cwd ? { cwd } : {}),
+    ...(envFile ? { envFile } : {}),
+    ...(env ? { env } : {}),
   };
 }
 
@@ -356,13 +396,53 @@ function sanitizeGlobalSettings(settings: Partial<GlobalSettings> | null | undef
   const defaultShell = typeof settings?.defaultShell === 'string' && settings.defaultShell.trim()
     ? settings.defaultShell.trim()
     : DEFAULT_SETTINGS.defaultShell;
+  const globalWindowShortcut = settings?.globalWindowShortcut
+    ? sanitizeShortcutDefinition(settings.globalWindowShortcut)
+    : null;
   return {
     defaultEditor: settings?.defaultEditor ?? DEFAULT_SETTINGS.defaultEditor,
     defaultShell,
     theme: settings?.theme ?? DEFAULT_SETTINGS.theme,
     language: settings?.language ?? DEFAULT_SETTINGS.language,
     terminalToggleShortcut: sanitizeShortcutDefinition(settings?.terminalToggleShortcut),
+    minimizeToTrayOnClose: Boolean(settings?.minimizeToTrayOnClose),
+    globalWindowShortcut,
   };
+}
+
+function sanitizeLaunchGroups(
+  groups: Array<Partial<LaunchGroup>> | null | undefined,
+  projects: Project[],
+): LaunchGroup[] {
+  const validCommandKeys = new Set(
+    projects.flatMap((project) => project.commands.map((command) => commandOutputKey(project.id, command.id))),
+  );
+
+  return (Array.isArray(groups) ? groups : [])
+    .map((group) => {
+      const name = typeof group?.name === 'string' ? group.name.trim() : '';
+      if (!name) return null;
+      const seen = new Set<string>();
+      const items = (Array.isArray(group?.items) ? group.items : [])
+        .filter((item): item is LaunchGroupItem => (
+          typeof item?.projectId === 'string'
+          && typeof item?.commandId === 'string'
+          && validCommandKeys.has(commandOutputKey(item.projectId, item.commandId))
+        ))
+        .filter((item) => {
+          const key = commandOutputKey(item.projectId, item.commandId);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      if (!items.length) return null;
+      return {
+        id: typeof group?.id === 'string' && group.id ? group.id : nanoid(),
+        name,
+        items,
+      };
+    })
+    .filter((group): group is LaunchGroup => Boolean(group));
 }
 
 function sanitizePersistedState(state: Partial<PersistedState> | null | undefined): PersistedState {
@@ -370,6 +450,7 @@ function sanitizePersistedState(state: Partial<PersistedState> | null | undefine
 
   return {
     projects,
+    launchGroups: sanitizeLaunchGroups(state?.launchGroups, projects),
     activeProjectId: sanitizeActiveProjectId(state?.activeProjectId, projects),
     settings: sanitizeGlobalSettings(state?.settings),
     uiPreferences: sanitizeUiPreferences(state?.uiPreferences, projects),
@@ -504,6 +585,13 @@ async function persistProjects(projects: Project[]) {
   }));
 }
 
+async function persistLaunchGroups(launchGroups: LaunchGroup[]) {
+  await enqueuePersist((state) => sanitizePersistedState({
+    ...state,
+    launchGroups,
+  }));
+}
+
 async function persistSettings(settings: GlobalSettings) {
   await enqueuePersist((state) => sanitizePersistedState({
     ...state,
@@ -540,6 +628,7 @@ export async function retryPersistence() {
 
 interface StoreState {
   projects: Project[];
+  launchGroups: LaunchGroup[];
   activeProjectId: string | null;
   globalSettings: GlobalSettings;
   hydrated: boolean;
@@ -571,10 +660,24 @@ interface StoreState {
   removeProject: (id: string) => void;
   reorderProjects: (orderedProjectIds: string[]) => void;
 
-  addCommand: (projectId: string, label: string, cmd: string, options?: { isDefault?: boolean }) => void;
+  addCommand: (
+    projectId: string,
+    label: string,
+    cmd: string,
+    options?: {
+      isDefault?: boolean;
+      cwd?: string;
+      env?: Record<string, string>;
+      envFile?: string;
+    },
+  ) => void;
   updateCommand: (projectId: string, commandId: string, updates: Partial<Command>) => void;
   removeCommand: (projectId: string, commandId: string) => void;
   reorderCommands: (projectId: string, orderedCommandIds: string[]) => void;
+
+  addLaunchGroup: (name: string, items: LaunchGroupItem[]) => string | null;
+  updateLaunchGroup: (id: string, updates: { name?: string; items?: LaunchGroupItem[] }) => void;
+  removeLaunchGroup: (id: string) => void;
 
   updateGlobalSettings: (settings: Partial<GlobalSettings>) => void;
 
@@ -609,6 +712,7 @@ interface StoreState {
 
 export const useStore = create<StoreState>((set) => ({
   projects: [],
+  launchGroups: [],
   activeProjectId: null,
   globalSettings: DEFAULT_SETTINGS,
   hydrated: false,
@@ -633,6 +737,7 @@ export const useStore = create<StoreState>((set) => ({
 
       set({
         projects: persistedState.projects,
+        launchGroups: persistedState.launchGroups,
         activeProjectId: persistedState.activeProjectId,
         globalSettings: persistedState.settings,
         hydrated: true,
@@ -650,6 +755,7 @@ export const useStore = create<StoreState>((set) => ({
       console.error('Failed to hydrate FlashRun config:', error);
       set({
         projects: [],
+        launchGroups: [],
         activeProjectId: null,
         globalSettings: DEFAULT_SETTINGS,
         hydrated: false,
@@ -855,7 +961,10 @@ export const useStore = create<StoreState>((set) => ({
       }
     }
 
+    const launchGroups = sanitizeLaunchGroups(state.launchGroups, projects);
+
     void persistProjects(projects);
+    void persistLaunchGroups(launchGroups);
     void persistActiveProject(activeProjectId);
     void persistUiPreferences(buildUiPreferencesSnapshot({
       isTerminalOpen: state.isTerminalOpen,
@@ -867,6 +976,7 @@ export const useStore = create<StoreState>((set) => ({
 
     return {
       projects,
+      launchGroups,
       activeProjectId,
       projectTerminals,
       activeCommandByProject,
@@ -896,6 +1006,10 @@ export const useStore = create<StoreState>((set) => ({
         return project;
       }
 
+      const cwd = typeof options?.cwd === 'string' && options.cwd.trim() ? options.cwd.trim() : undefined;
+      const envFile = typeof options?.envFile === 'string' && options.envFile.trim() ? options.envFile.trim() : undefined;
+      const env = sanitizeEnvRecord(options?.env);
+
       const nextCommand: Command = {
         id: nanoid(),
         label,
@@ -903,6 +1017,9 @@ export const useStore = create<StoreState>((set) => ({
         status: 'idle',
         pid: null,
         isDefault: Boolean(options?.isDefault),
+        ...(cwd ? { cwd } : {}),
+        ...(envFile ? { envFile } : {}),
+        ...(env ? { env } : {}),
       };
 
       const nextCommands = options?.isDefault
@@ -984,8 +1101,11 @@ export const useStore = create<StoreState>((set) => ({
       ? { ...state.terminalViewByProject, [projectId]: { mode: 'shell' as const } }
       : state.terminalViewByProject;
 
+    const launchGroups = sanitizeLaunchGroups(state.launchGroups, projects);
+
     void persistProjects(projects);
-    return { projects, activeCommandByProject, commandRuntimeByKey, terminalViewByProject };
+    void persistLaunchGroups(launchGroups);
+    return { projects, launchGroups, activeCommandByProject, commandRuntimeByKey, terminalViewByProject };
   }),
 
   reorderCommands: (projectId, orderedCommandIds) => set((state) => {
@@ -1009,6 +1129,47 @@ export const useStore = create<StoreState>((set) => ({
 
     void persistProjects(projects);
     return { projects };
+  }),
+
+  addLaunchGroup: (name, items) => {
+    let createdId: string | null = null;
+    set((state) => {
+      const candidate: LaunchGroup = {
+        id: nanoid(),
+        name: name.trim(),
+        items,
+      };
+      const sanitized = sanitizeLaunchGroups([candidate], state.projects);
+      if (!sanitized.length) {
+        return state;
+      }
+      createdId = sanitized[0].id;
+      const launchGroups = [...state.launchGroups, sanitized[0]];
+      void persistLaunchGroups(launchGroups);
+      return { launchGroups };
+    });
+    return createdId;
+  },
+
+  updateLaunchGroup: (id, updates) => set((state) => {
+    const next = state.launchGroups.map((group) => (
+      group.id === id
+        ? {
+          ...group,
+          name: updates.name !== undefined ? updates.name : group.name,
+          items: updates.items !== undefined ? updates.items : group.items,
+        }
+        : group
+    ));
+    const launchGroups = sanitizeLaunchGroups(next, state.projects);
+    void persistLaunchGroups(launchGroups);
+    return { launchGroups };
+  }),
+
+  removeLaunchGroup: (id) => set((state) => {
+    const launchGroups = state.launchGroups.filter((group) => group.id !== id);
+    void persistLaunchGroups(launchGroups);
+    return { launchGroups };
   }),
 
   updateGlobalSettings: (settings) => set((state) => {
