@@ -47,6 +47,18 @@ export class OutputBuffer {
   clear() { this.chunks.fill(''); this.head = 0; this.count = 0; this.length = 0; }
 }
 const commandBuffers = new Map<string, OutputBuffer>();
+let lastTerminalSize: { rows: number; cols: number } = { rows: 24, cols: 80 };
+
+export function setLastTerminalSize(rows: number, cols: number) {
+  if (rows >= 1 && rows <= 1000 && cols >= 1 && cols <= 1000) {
+    lastTerminalSize = { rows, cols };
+  }
+}
+
+export function getLastTerminalSize(): { rows: number; cols: number } {
+  return { ...lastTerminalSize };
+}
+
 export const commandOutputKey = (projectId: string, commandId: string) => JSON.stringify([projectId, commandId]);
 export function getCommandOutput(projectId: string, commandId: string) {
   const key = commandOutputKey(projectId, commandId);
@@ -56,6 +68,9 @@ export function getCommandOutput(projectId: string, commandId: string) {
 }
 export function appendTerminalOutput(payload: TerminalOutputPayload) {
   getCommandOutput(payload.projectId, payload.commandId).append(payload.data);
+}
+export function clearCommandOutput(projectId: string, commandId: string) {
+  commandBuffers.get(commandOutputKey(projectId, commandId))?.clear();
 }
 export function pruneCommandOutput(validKeys: Set<string>) {
   for (const key of commandBuffers.keys()) if (!validKeys.has(key)) commandBuffers.delete(key);

@@ -6,6 +6,19 @@ import {
   getDefaultTerminalShortcut,
   sanitizeShortcutDefinition,
 } from './utils/shortcuts';
+import { commandOutputKey } from './utils/terminal';
+
+export interface CommandRuntimeInfo {
+  startedAt: number | null;
+  lastExitCode: number | null;
+  lastDurationMs: number | null;
+  detectedUrls: string[];
+  portConflict: number | null;
+}
+
+export type ProjectTerminalView =
+  | { mode: 'shell' }
+  | { mode: 'command'; commandId: string };
 
 export type EditorKey = 'code' | 'cursor' | 'zed' | 'codebuddy' | 'antigravity';
 
@@ -492,6 +505,8 @@ interface StoreState {
   hydrationError: string | null;
   persistenceError: string | null;
   activeCommandByProject: Record<string, string | null>;
+  commandRuntimeByKey: Record<string, CommandRuntimeInfo>;
+  terminalViewByProject: Record<string, ProjectTerminalView>;
 
   hydrate: () => Promise<void>;
   addProject: (
@@ -537,6 +552,16 @@ interface StoreState {
   setActiveTerminalTab: (projectId: string, tabId: string) => void;
   setProjectActiveCommand: (projectId: string, commandId: string | null) => void;
   syncProjectActiveCommand: (projectId: string) => void;
+  setProjectTerminalView: (projectId: string, view: ProjectTerminalView) => void;
+  markCommandStarted: (projectId: string, commandId: string) => void;
+  markCommandExited: (projectId: string, commandId: string, exitCode: number | null) => void;
+  recordCommandOutputInsights: (
+    projectId: string,
+    commandId: string,
+    detectedUrls: string[],
+    portConflict: number | null,
+  ) => void;
+  clearCommandPortConflict: (projectId: string, commandId: string) => void;
 }
 
 export const useStore = create<StoreState>((set) => ({
@@ -547,6 +572,8 @@ export const useStore = create<StoreState>((set) => ({
   hydrationError: null,
   persistenceError: null,
   activeCommandByProject: {},
+  commandRuntimeByKey: {},
+  terminalViewByProject: {},
   isTerminalOpen: false,
   terminalHeight: DEFAULT_TERMINAL_HEIGHT,
   isSidebarExpanded: true,
@@ -772,6 +799,17 @@ export const useStore = create<StoreState>((set) => ({
     const activeCommandByProject = { ...state.activeCommandByProject };
     delete activeCommandByProject[id];
 
+    const terminalViewByProject = { ...state.terminalViewByProject };
+    delete terminalViewByProject[id];
+
+    const removedProject = state.projects.find((project) => project.id === id);
+    const commandRuntimeByKey = { ...state.commandRuntimeByKey };
+    if (removedProject) {
+      for (const command of removedProject.commands) {
+        delete commandRuntimeByKey[commandOutputKey(id, command.id)];
+      }
+    }
+
     void persistProjects(projects);
     void persistActiveProject(activeProjectId);
     void persistUiPreferences(buildUiPreferencesSnapshot({
@@ -787,6 +825,8 @@ export const useStore = create<StoreState>((set) => ({
       activeProjectId,
       projectTerminals,
       activeCommandByProject,
+      terminalViewByProject,
+      commandRuntimeByKey,
     };
   }),
 
@@ -891,8 +931,16 @@ export const useStore = create<StoreState>((set) => ({
       [projectId]: resolvePreferredRunningCommandId(nextProject?.commands ?? [], state.activeCommandByProject[projectId]),
     };
 
+    const commandRuntimeByKey = { ...state.commandRuntimeByKey };
+    delete commandRuntimeByKey[commandOutputKey(projectId, commandId)];
+
+    const currentView = state.terminalViewByProject[projectId];
+    const terminalViewByProject = currentView?.mode === 'command' && currentView.commandId === commandId
+      ? { ...state.terminalViewByProject, [projectId]: { mode: 'shell' as const } }
+      : state.terminalViewByProject;
+
     void persistProjects(projects);
-    return { projects, activeCommandByProject };
+    return { projects, activeCommandByProject, commandRuntimeByKey, terminalViewByProject };
   }),
 
   reorderCommands: (projectId, orderedCommandIds) => set((state) => {
@@ -1082,6 +1130,14 @@ export const useStore = create<StoreState>((set) => ({
       ...state.activeCommandByProject,
       [projectId]: commandId,
     },
+    ...(commandId
+      ? {
+        terminalViewByProject: {
+          ...state.terminalViewByProject,
+          [projectId]: { mode: 'command' as const, commandId },
+        },
+      }
+      : {}),
   })),
 
   syncProjectActiveCommand: (projectId) => set((state) => {
@@ -1094,6 +1150,97 @@ export const useStore = create<StoreState>((set) => ({
       activeCommandByProject: {
         ...state.activeCommandByProject,
         [projectId]: resolvePreferredRunningCommandId(project.commands, state.activeCommandByProject[projectId]),
+      },
+    };
+  }),
+
+  setProjectTerminalView: (projectId, view) => set((state) => ({
+    terminalViewByProject: {
+      ...state.terminalViewByProject,
+      [projectId]: view,
+    },
+  })),
+
+  markCommandStarted: (projectId, commandId) => set((state) => {
+    const key = commandOutputKey(projectId, commandId);
+    return {
+      commandRuntimeByKey: {
+        ...state.commandRuntimeByKey,
+        [key]: {
+          startedAt: Date.now(),
+          lastExitCode: null,
+          lastDurationMs: null,
+          detectedUrls: [],
+          portConflict: null,
+        },
+      },
+    };
+  }),
+
+  markCommandExited: (projectId, commandId, exitCode) => set((state) => {
+    const key = commandOutputKey(projectId, commandId);
+    const existing = state.commandRuntimeByKey[key];
+    const startedAt = existing?.startedAt ?? null;
+    const lastDurationMs = startedAt !== null ? Math.max(0, Date.now() - startedAt) : (existing?.lastDurationMs ?? null);
+    return {
+      commandRuntimeByKey: {
+        ...state.commandRuntimeByKey,
+        [key]: {
+          startedAt: null,
+          lastExitCode: exitCode,
+          lastDurationMs,
+          detectedUrls: existing?.detectedUrls ?? [],
+          portConflict: existing?.portConflict ?? null,
+        },
+      },
+    };
+  }),
+
+  recordCommandOutputInsights: (projectId, commandId, detectedUrls, portConflict) => set((state) => {
+    const key = commandOutputKey(projectId, commandId);
+    const existing = state.commandRuntimeByKey[key] ?? {
+      startedAt: null,
+      lastExitCode: null,
+      lastDurationMs: null,
+      detectedUrls: [],
+      portConflict: null,
+    };
+
+    const urlsChanged = detectedUrls.length !== existing.detectedUrls.length
+      || detectedUrls.some((url, index) => url !== existing.detectedUrls[index]);
+    const nextConflict = portConflict ?? existing.portConflict;
+    const conflictChanged = nextConflict !== existing.portConflict;
+
+    if (!urlsChanged && !conflictChanged) {
+      return state;
+    }
+
+    return {
+      commandRuntimeByKey: {
+        ...state.commandRuntimeByKey,
+        [key]: {
+          ...existing,
+          detectedUrls: urlsChanged ? detectedUrls : existing.detectedUrls,
+          portConflict: nextConflict,
+        },
+      },
+    };
+  }),
+
+  clearCommandPortConflict: (projectId, commandId) => set((state) => {
+    const key = commandOutputKey(projectId, commandId);
+    const existing = state.commandRuntimeByKey[key];
+    if (!existing || existing.portConflict === null) {
+      return state;
+    }
+
+    return {
+      commandRuntimeByKey: {
+        ...state.commandRuntimeByKey,
+        [key]: {
+          ...existing,
+          portConflict: null,
+        },
       },
     };
   }),

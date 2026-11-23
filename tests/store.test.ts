@@ -99,4 +99,31 @@ describe('configuration protection', () => {
     expect(cargoProject.commands.map((c) => c.cmd)).toEqual(['cargo run', 'cargo test']);
     await flushPersistence();
   });
+  it('tracks command runtime insights, exit codes, and clears them on removal', async () => {
+    mocks.invoke.mockResolvedValue(null);
+    const { useStore, flushPersistence } = await import('../src/store');
+    const { commandOutputKey } = await import('../src/utils/terminal');
+    await useStore.getState().hydrate();
+    const { projectId } = useStore.getState().addProject('/workspace/web', 'pnpm', { dev: 'vite' });
+    const commandId = useStore.getState().projects[0].commands[0].id;
+    const key = commandOutputKey(projectId, commandId);
+
+    useStore.getState().markCommandStarted(projectId, commandId);
+    expect(useStore.getState().commandRuntimeByKey[key]?.startedAt).toBeTypeOf('number');
+
+    useStore.getState().recordCommandOutputInsights(projectId, commandId, ['http://localhost:5173/'], 5173);
+    expect(useStore.getState().commandRuntimeByKey[key]?.detectedUrls).toEqual(['http://localhost:5173/']);
+    expect(useStore.getState().commandRuntimeByKey[key]?.portConflict).toBe(5173);
+
+    useStore.getState().clearCommandPortConflict(projectId, commandId);
+    expect(useStore.getState().commandRuntimeByKey[key]?.portConflict).toBeNull();
+
+    useStore.getState().markCommandExited(projectId, commandId, 1);
+    expect(useStore.getState().commandRuntimeByKey[key]?.lastExitCode).toBe(1);
+    expect(useStore.getState().commandRuntimeByKey[key]?.lastDurationMs).toBeTypeOf('number');
+
+    useStore.getState().removeCommand(projectId, commandId);
+    expect(useStore.getState().commandRuntimeByKey[key]).toBeUndefined();
+    await flushPersistence();
+  });
 });

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { OutputBuffer, appendTerminalOutput, getCommandOutput, pruneCommandOutput } from '../src/utils/terminal';
+import {
+  OutputBuffer,
+  appendTerminalOutput,
+  clearCommandOutput,
+  getCommandOutput,
+  getLastTerminalSize,
+  pruneCommandOutput,
+  setLastTerminalSize,
+} from '../src/utils/terminal';
 
 describe('bounded terminal output', () => {
   it('bounds both tiny chunks and oversized writes, in chronological order', () => {
@@ -29,5 +37,14 @@ describe('bounded terminal output', () => {
     expect(getCommandOutput('project', 'b').snapshot()).toBe('BBB');
     pruneCommandOutput(new Set());
     expect(getCommandOutput('project', 'a').snapshot()).toBe('');
+  });
+  it('tracks valid terminal size and clears command output on demand', () => {
+    setLastTerminalSize(40, 132);
+    expect(getLastTerminalSize()).toEqual({ rows: 40, cols: 132 });
+    setLastTerminalSize(0, 9999);
+    expect(getLastTerminalSize()).toEqual({ rows: 40, cols: 132 });
+    appendTerminalOutput({ projectId: 'p', commandId: 'c', projectName: 'n', commandLabel: 'l', data: 'hello' });
+    clearCommandOutput('p', 'c');
+    expect(getCommandOutput('p', 'c').snapshot()).toBe('');
   });
 });

@@ -16,6 +16,9 @@ import { guardWindowClose, requestWindowClose } from './utils/windowClose';
 import { useTranslation } from 'react-i18next';
 import { eventMatchesShortcut } from './utils/shortcuts';
 import { toast } from './utils/toast';
+import { extractLocalUrls, extractPortConflict } from './utils/logInsights';
+import { consumeManuallyStoppedPid } from './hooks/useCommandRunner';
+import { useResolvedTheme } from './hooks/useResolvedTheme';
 import {
   appendTerminalOutput,
   commandOutputKey,
@@ -73,6 +76,7 @@ function App() {
 
   const { t, i18n } = useTranslation();
   const appWindow = useMemo(() => getCurrentWindow(), []);
+  const resolvedTheme = useResolvedTheme();
 
   // ── Derived values ─────────────────────────────────────────────
   const activeProject = projects.find((project) => project.id === activeProjectId);
@@ -142,18 +146,8 @@ function App() {
   useEffect(() => { i18n.changeLanguage(globalSettings.language || 'zh'); }, [globalSettings.language, i18n]);
 
   useEffect(() => {
-    const root = document.documentElement;
-    if (globalSettings.theme !== 'system') {
-      root.classList.toggle('dark', globalSettings.theme === 'dark');
-      return undefined;
-    }
-
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const applySystemTheme = () => root.classList.toggle('dark', mediaQuery.matches);
-    applySystemTheme();
-    mediaQuery.addEventListener('change', applySystemTheme);
-    return () => mediaQuery.removeEventListener('change', applySystemTheme);
-  }, [globalSettings.theme]);
+    document.documentElement.classList.toggle('dark', resolvedTheme === 'dark');
+  }, [resolvedTheme]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -177,9 +171,22 @@ function App() {
   }, [globalSettings.terminalToggleShortcut, hydrated, toggleTerminalWithFit]);
 
   useEffect(() => {
+    const tailByCommand = new Map<string, string>();
     const unlistenPromise = listen<TerminalOutputPayload>(TERMINAL_OUTPUT_EVENT, (event) => {
-      if (!useStore.getState().projects.some((project) => project.id === event.payload.projectId && project.commands.some((command) => command.id === event.payload.commandId))) return;
+      const state = useStore.getState();
+      if (!state.projects.some((project) => project.id === event.payload.projectId && project.commands.some((command) => command.id === event.payload.commandId))) return;
       appendTerminalOutput(event.payload);
+
+      const key = commandOutputKey(event.payload.projectId, event.payload.commandId);
+      const combined = (tailByCommand.get(key) ?? '') + event.payload.data;
+      tailByCommand.set(key, combined.slice(-512));
+
+      const existingUrls = state.commandRuntimeByKey[key]?.detectedUrls ?? [];
+      const nextUrls = extractLocalUrls(combined, existingUrls);
+      const conflict = extractPortConflict(combined);
+      if (nextUrls !== existingUrls || conflict !== null) {
+        state.recordCommandOutputInsights(event.payload.projectId, event.payload.commandId, nextUrls, conflict);
+      }
     });
     return () => { unlistenPromise.then((unlisten) => unlisten()); };
   }, []);
@@ -201,12 +208,20 @@ function App() {
       }
 
       if (command.pid !== event.payload.pid) return;
+      const wasManuallyStopped = consumeManuallyStoppedPid(event.payload.pid);
+      state.markCommandExited(event.payload.projectId, event.payload.commandId, wasManuallyStopped ? null : event.payload.exitCode);
       state.updateCommand(event.payload.projectId, event.payload.commandId, { status: 'idle', pid: null });
       state.syncProjectActiveCommand(event.payload.projectId);
+      if (!wasManuallyStopped && event.payload.exitCode !== null && event.payload.exitCode !== 0) {
+        toast.warning(t('命令“{{command}}”异常退出（退出码 {{code}}）。', {
+          command: command.label,
+          code: event.payload.exitCode,
+        }));
+      }
       requestTerminalFit();
     });
     return () => { unlistenPromise.then((unlisten) => unlisten()); };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!terminalVisible) return;

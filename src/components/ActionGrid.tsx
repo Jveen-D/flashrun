@@ -16,17 +16,35 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { invoke } from '@tauri-apps/api/core';
 import { confirm } from '@tauri-apps/plugin-dialog';
-import { useStore, type Command, type ProjectInfoPayload } from '../store';
-import { Play, Square, TerminalSquare, Plus, Settings2, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { useStore, type Command, type CommandRuntimeInfo, type ProjectInfoPayload } from '../store';
+import {
+  AlertTriangle,
+  ExternalLink,
+  Play,
+  Plus,
+  RefreshCw,
+  Settings2,
+  Sparkles,
+  Square,
+  TerminalSquare,
+  Trash2,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { CommandConfigModal } from './CommandConfigModal';
 import { useCommandRunner } from '../hooks/useCommandRunner';
+import { commandOutputKey } from '../utils/terminal';
+import { formatDisplayUrl, formatDuration } from '../utils/logInsights';
+import { freeConflictingPortAndRestart } from '../utils/portConflict';
 import { toast } from '../utils/toast';
 
 interface SortableCommandCardProps {
   command: Command;
+  runtime?: CommandRuntimeInfo;
   onEdit: (command: Command, event: React.MouseEvent) => void;
   onDelete: (command: Command, event: React.MouseEvent) => void;
+  onViewLogs: (command: Command) => void;
+  onResolveConflict: (command: Command, port: number) => void;
   onRun: (command: Command) => void;
   onStop: (command: Command) => void;
   onRestart: (command: Command) => void;
@@ -36,8 +54,11 @@ interface SortableCommandCardProps {
 
 function SortableCommandCard({
   command,
+  runtime,
   onEdit,
   onDelete,
+  onViewLogs,
+  onResolveConflict,
   onRun,
   onStop,
   onRestart,
@@ -97,9 +118,65 @@ function SortableCommandCard({
           <p className="truncate font-mono text-[11px] text-slate-500 opacity-75 dark:text-slate-400" title={command.cmd}>
             $ {command.cmd}
           </p>
+
+          {(runtime?.detectedUrls.length || runtime?.portConflict || (!isRunning && runtime?.lastExitCode !== null && runtime?.lastExitCode !== undefined)) && (
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+              {!isRunning && runtime?.lastExitCode !== null && runtime?.lastExitCode !== undefined && (
+                <button
+                  type="button"
+                  onClick={() => onViewLogs(command)}
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[10px] font-semibold transition-colors ${
+                    runtime.lastExitCode === 0
+                      ? 'border-emerald-200 bg-emerald-50/90 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300'
+                      : 'border-rose-200 bg-rose-50/90 text-rose-700 hover:bg-rose-100 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-300'
+                  }`}
+                  title={t('查看终端日志')}
+                >
+                  <span>{runtime.lastExitCode === 0 ? '✓ 0' : `✗ ${runtime.lastExitCode}`}</span>
+                  {runtime.lastDurationMs !== null && (
+                    <span className="opacity-80">· {formatDuration(runtime.lastDurationMs)}</span>
+                  )}
+                </button>
+              )}
+
+              {runtime?.detectedUrls.map((url) => (
+                <button
+                  key={url}
+                  type="button"
+                  onClick={() => void openUrl(url).catch((error) => toast.error(String(error)))}
+                  className="inline-flex max-w-full items-center gap-1 rounded-md border border-blue-200 bg-blue-50/90 px-2 py-0.5 font-mono text-[10px] font-medium text-blue-600 transition-colors hover:bg-blue-100 dark:border-blue-500/30 dark:bg-blue-500/15 dark:text-blue-300 dark:hover:bg-blue-500/25"
+                  title={t('在浏览器中打开 {{url}}', { url })}
+                >
+                  <ExternalLink size={10} className="shrink-0" />
+                  <span className="truncate">{formatDisplayUrl(url)}</span>
+                </button>
+              ))}
+
+              {runtime?.portConflict && (
+                <button
+                  type="button"
+                  onClick={() => onResolveConflict(command, runtime.portConflict!)}
+                  className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-500/35 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/25"
+                  title={t('端口 {{port}} 被占用，点击释放并重启', { port: runtime.portConflict })}
+                >
+                  <AlertTriangle size={10} className="shrink-0" />
+                  <span>{t('端口 {{port}} 冲突 · 释放并重启', { port: runtime.portConflict })}</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          <button
+            type="button"
+            onClick={() => onViewLogs(command)}
+            className="rounded-md border border-transparent p-1.5 text-slate-400 transition-colors hover:border-blue-200/80 hover:bg-blue-50 hover:text-blue-600 dark:text-slate-500 dark:hover:border-blue-500/30 dark:hover:bg-blue-500/10 dark:hover:text-blue-400"
+            title={t('查看终端日志')}
+            aria-label={t('查看终端日志')}
+          >
+            <TerminalSquare size={15} />
+          </button>
           <button
             type="button"
             onClick={(event) => onEdit(command, event)}
@@ -176,11 +253,14 @@ function SortableCommandCard({
 export const ActionGrid: React.FC = () => {
   const projects = useStore((state) => state.projects);
   const activeProjectId = useStore((state) => state.activeProjectId);
+  const commandRuntimeByKey = useStore((state) => state.commandRuntimeByKey);
   const addCommand = useStore((state) => state.addCommand);
   const updateCommand = useStore((state) => state.updateCommand);
   const removeCommand = useStore((state) => state.removeCommand);
   const reorderCommands = useStore((state) => state.reorderCommands);
   const syncProjectCommands = useStore((state) => state.syncProjectCommands);
+  const setTerminalOpen = useStore((state) => state.setTerminalOpen);
+  const setProjectTerminalView = useStore((state) => state.setProjectTerminalView);
   const { runCommand, stopCommand, restartCommand } = useCommandRunner();
 
   const { t } = useTranslation();
@@ -362,6 +442,7 @@ export const ActionGrid: React.FC = () => {
                 <SortableCommandCard
                   key={command.id}
                   command={command}
+                  runtime={commandRuntimeByKey[commandOutputKey(activeProject.id, command.id)]}
                   onEdit={(nextCommand, event) => {
                     event.stopPropagation();
                     setEditingCommand(nextCommand);
@@ -369,6 +450,19 @@ export const ActionGrid: React.FC = () => {
                   onDelete={(nextCommand, event) => {
                     event.stopPropagation();
                     void handleDeleteCommand(nextCommand);
+                  }}
+                  onViewLogs={(nextCommand) => {
+                    setProjectTerminalView(activeProject.id, { mode: 'command', commandId: nextCommand.id });
+                    setTerminalOpen(true);
+                  }}
+                  onResolveConflict={(nextCommand, port) => {
+                    void freeConflictingPortAndRestart({
+                      projectId: activeProject.id,
+                      commandId: nextCommand.id,
+                      port,
+                      restart: restartCommand,
+                      t,
+                    });
                   }}
                   onRun={handleRun}
                   onStop={handleStop}

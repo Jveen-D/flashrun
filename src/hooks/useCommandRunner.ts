@@ -1,11 +1,20 @@
 import { useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
-import { requestTerminalFit } from '../utils/terminal';
+import { getLastTerminalSize, requestTerminalFit } from '../utils/terminal';
 
 const pendingStarts = new Map<string, Promise<number>>();
 const pendingStops = new Map<string, Promise<void>>();
+const manuallyStoppedPids = new Set<number>();
 const commandKey = (projectId: string, commandId: string) => JSON.stringify([projectId, commandId]);
+
+export function consumeManuallyStoppedPid(pid: number): boolean {
+  if (!manuallyStoppedPids.has(pid)) {
+    return false;
+  }
+  manuallyStoppedPids.delete(pid);
+  return true;
+}
 
 function resolveProjectCommand(projectId: string, commandId: string) {
   const state = useStore.getState();
@@ -43,8 +52,10 @@ export function useCommandRunner() {
       setActiveProject(projectId);
       setTerminalOpen(true);
       setProjectActiveCommand(projectId, commandId);
+      useStore.getState().markCommandStarted?.(projectId, commandId);
       updateCommand(projectId, commandId, { status: 'running', pid: null });
 
+      const { rows, cols } = getLastTerminalSize();
       const pending = invoke<number>('run_command', {
         path: project.path,
         cmd: command.cmd,
@@ -52,6 +63,8 @@ export function useCommandRunner() {
         projectId: project.id,
         projectName: project.name,
         commandLabel: command.label,
+        rows,
+        cols,
       });
       pendingStarts.set(key, pending);
       const pid = await pending;
@@ -86,9 +99,16 @@ export function useCommandRunner() {
     const pending = (async () => {
       const pid = command.pid ?? await waitForCommandPid(projectId, commandId);
       if (pid) {
-        await invoke('kill_command', { pid });
+        manuallyStoppedPids.add(pid);
+        try {
+          await invoke('kill_command', { pid });
+        } catch (error) {
+          manuallyStoppedPids.delete(pid);
+          throw error;
+        }
       }
 
+      useStore.getState().markCommandExited?.(projectId, commandId, null);
       updateCommand(projectId, commandId, { status: 'idle', pid: null });
       syncProjectActiveCommand(projectId);
     })();

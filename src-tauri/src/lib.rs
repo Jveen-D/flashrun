@@ -30,11 +30,11 @@ fn config_file_path() -> Result<PathBuf, String> {
 fn legacy_config_file_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        return std::env::var("APPDATA").ok().map(|app_data| {
+        std::env::var("APPDATA").ok().map(|app_data| {
             PathBuf::from(app_data)
                 .join(LEGACY_APP_IDENTIFIER)
                 .join(CONFIG_FILE_NAME)
-        });
+        })
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -398,6 +398,12 @@ async fn save_app_config(
         .map_err(|e| e.to_string())?
 }
 
+fn normalize_pty_dimensions(rows: Option<u16>, cols: Option<u16>) -> (u16, u16) {
+    let rows = rows.filter(|&r| (1..=1000).contains(&r)).unwrap_or(24);
+    let cols = cols.filter(|&c| (1..=1000).contains(&c)).unwrap_or(80);
+    (rows, cols)
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn run_command(
@@ -409,8 +415,11 @@ async fn run_command(
     project_id: String,
     project_name: String,
     command_label: String,
+    rows: Option<u16>,
+    cols: Option<u16>,
 ) -> Result<u32, String> {
     let manager = state.inner().clone();
+    let (rows, cols) = normalize_pty_dimensions(rows, cols);
     tauri::async_runtime::spawn_blocking(move || {
         manager.spawn(
             app,
@@ -422,9 +431,18 @@ async fn run_command(
                 project_name,
                 command_label,
             },
-            24,
-            80,
+            rows,
+            cols,
         )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn export_text_file(path: String, content: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::write(&path, content).map_err(|e| format!("写入文件失败: {}", e))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -803,12 +821,12 @@ fn open_in_editor(path: String, editor_key: String) -> Result<(), String> {
             ));
         }
 
-        return Err(format!(
+        Err(format!(
             "无法唤起编辑器 `{}`。已尝试：{}。错误：{}",
             editor_key,
             candidates.join("、"),
             launch_errors.join(" | ")
-        ));
+        ))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -823,10 +841,10 @@ fn open_in_editor(path: String, editor_key: String) -> Result<(), String> {
             }
         }
 
-        return Err(format!(
+        Err(format!(
             "无法找到编辑器命令 `{}`。请确保已将对应 CLI 加入系统环境变量 PATH 中。",
             candidates.join("`、`")
-        ));
+        ))
     }
 }
 
@@ -858,6 +876,7 @@ pub fn run() {
             ports::terminate_port,
             ports::inspect_port,
             open_in_editor,
+            export_text_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -957,5 +976,12 @@ mod tests {
             parse_project_info(empty_dir.path().to_string_lossy().into_owned()).unwrap();
         assert_eq!(empty_info.manager, "custom");
         assert!(empty_info.commands.is_empty());
+    }
+
+    #[test]
+    fn normalizes_pty_dimensions_with_safe_fallback() {
+        assert_eq!(normalize_pty_dimensions(None, None), (24, 80));
+        assert_eq!(normalize_pty_dimensions(Some(0), Some(1200)), (24, 80));
+        assert_eq!(normalize_pty_dimensions(Some(42), Some(140)), (42, 140));
     }
 }
