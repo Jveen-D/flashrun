@@ -1,5 +1,8 @@
+#[cfg(unix)]
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
+#[cfg(unix)]
+use std::time::Duration;
 use std::{
     collections::HashMap,
     io::Write,
@@ -9,10 +12,11 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Duration,
 };
 use tauri::Emitter;
 
+#[cfg(windows)]
+use super::win_conpty;
 use super::{stream_terminal_output, CommandStatusPayload, TerminalOutputPayload};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -252,6 +256,64 @@ pub enum Output {
     },
 }
 
+#[cfg(windows)]
+struct Session {
+    child: win_conpty::WinChild,
+    pty: win_conpty::WinConPty,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    tree: win_conpty::ProcessTree,
+}
+
+#[cfg(windows)]
+impl Session {
+    fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
+        validate_dimensions(rows, cols)?;
+        self.pty.resize(rows, cols)
+    }
+
+    fn wait_exit(&self) -> Option<i32> {
+        let code = self.child.wait_blocking().ok();
+        let _ = self.tree.stop();
+        self.pty.close();
+        code
+    }
+
+    fn stop_and_wait(&self) -> Result<(), String> {
+        self.tree.stop()?;
+        if self.child.wait_timeout(2000)?.is_some() {
+            self.pty.close();
+            return Ok(());
+        }
+        Err("停止会话超时；保留会话以便重试。".into())
+    }
+
+    #[cfg(test)]
+    fn try_wait_code(&self) -> Result<Option<i32>, String> {
+        self.child.try_wait()
+    }
+
+    #[cfg(test)]
+    fn wait_code(&self) -> Result<i32, String> {
+        self.child.wait_blocking()
+    }
+
+    #[cfg(test)]
+    fn current_cols(&self) -> u16 {
+        self.pty.get_size().1
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.tree.stop();
+        self.child.kill();
+        let _ = self.child.wait_timeout(1000);
+        self.pty.close();
+    }
+}
+
+#[cfg(unix)]
 struct Session {
     child: Mutex<Box<dyn Child + Send + Sync>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -259,6 +321,74 @@ struct Session {
     tree: ProcessTree,
 }
 
+#[cfg(unix)]
+impl Session {
+    fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
+        self.master
+            .lock()
+            .map_err(|e| e.to_string())?
+            .resize(size(rows, cols)?)
+            .map_err(|e| e.to_string())
+    }
+
+    fn wait_exit(&self) -> Option<i32> {
+        let code = loop {
+            let result = self.child.lock().unwrap().try_wait();
+            match result {
+                Ok(Some(status)) => break Some(status.exit_code() as i32),
+                Ok(None) => thread::sleep(Duration::from_millis(50)),
+                Err(_) => break None,
+            }
+        };
+        let _ = self.tree.stop();
+        code
+    }
+
+    fn stop_and_wait(&self) -> Result<(), String> {
+        self.tree.stop()?;
+        for _ in 0..100 {
+            if self
+                .child
+                .lock()
+                .map_err(|e| e.to_string())?
+                .try_wait()
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        Err("停止会话超时；保留会话以便重试。".into())
+    }
+
+    #[cfg(test)]
+    fn try_wait_code(&self) -> Result<Option<i32>, String> {
+        self.child
+            .lock()
+            .map_err(|e| e.to_string())?
+            .try_wait()
+            .map(|opt| opt.map(|status| status.exit_code() as i32))
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(test)]
+    fn wait_code(&self) -> Result<i32, String> {
+        self.child
+            .lock()
+            .map_err(|e| e.to_string())?
+            .wait()
+            .map(|status| status.exit_code() as i32)
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(test)]
+    fn current_cols(&self) -> u16 {
+        self.master.lock().unwrap().get_size().unwrap().cols
+    }
+}
+
+#[cfg(unix)]
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.tree.stop();
@@ -322,76 +452,41 @@ impl<R: std::io::Read, W: FnMut() -> std::io::Result<()>> std::io::Read for Star
 }
 
 #[cfg(windows)]
-fn build_windows_interactive_shell(shell_id: Option<&str>) -> CommandBuilder {
+fn build_windows_interactive_shell_cmdline(shell_id: Option<&str>) -> String {
     match shell_id.unwrap_or("auto") {
         "pwsh" => {
             if let Some(pwsh) = find_windows_pwsh() {
-                let mut builder = CommandBuilder::new(pwsh);
-                builder.args([
-                    "-NoLogo",
-                    "-NoExit",
-                    "-Command",
-                    "[Console]::ReadLine() | Out-Null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
-                ]);
-                return builder;
+                return format!(
+                    "\"{}\" -NoLogo -NoExit -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\"",
+                    pwsh.to_string_lossy()
+                );
             }
         }
         "powershell" => {
             if let Some(ps) = find_windows_powershell() {
-                let mut builder = CommandBuilder::new(ps);
-                builder.args([
-                    "-NoLogo",
-                    "-NoExit",
-                    "-Command",
-                    "[Console]::ReadLine() | Out-Null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
-                ]);
-                return builder;
+                return format!(
+                    "\"{}\" -NoLogo -NoExit -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\"",
+                    ps.to_string_lossy()
+                );
             }
         }
         "git-bash" => {
             if let Some(bash) = find_windows_git_bash() {
-                let mut builder = CommandBuilder::new("cmd.exe");
-                builder.args([
-                    "/d",
-                    "/q",
-                    "/s",
-                    "/c",
-                    &format!(
-                        "set /p __FLASHRUN_START= >nul & \"{}\" -i -l",
-                        bash.to_string_lossy()
-                    ),
-                ]);
-                return builder;
+                return format!("\"{}\" -i -l", bash.to_string_lossy());
             }
         }
         "wsl" => {
             if let Some(wsl) = find_windows_wsl() {
-                let mut builder = CommandBuilder::new("cmd.exe");
-                builder.args([
-                    "/d",
-                    "/q",
-                    "/s",
-                    "/c",
-                    &format!(
-                        "set /p __FLASHRUN_START= >nul & \"{}\"",
-                        wsl.to_string_lossy()
-                    ),
-                ]);
-                return builder;
+                return format!("\"{}\"", wsl.to_string_lossy());
             }
         }
         _ => {}
     }
 
-    let mut builder = CommandBuilder::new("cmd.exe");
-    builder.args([
-        "/d",
-        "/q",
-        "/s",
-        "/k",
-        "set /p __FLASHRUN_START= >nul & chcp 65001>nul",
-    ]);
-    builder
+    format!(
+        "\"{}\\System32\\cmd.exe\" /d /q /s /k \"chcp 65001>nul\"",
+        windows_system_root().to_string_lossy()
+    )
 }
 
 #[cfg(unix)]
@@ -418,6 +513,70 @@ fn open_session(
     open_session_with_shell(path, command, None, None, rows, cols)
 }
 
+#[cfg(windows)]
+fn open_session_with_shell(
+    path: String,
+    command: Option<String>,
+    shell_id: Option<String>,
+    env_vars: Option<indexmap::IndexMap<String, String>>,
+    rows: u16,
+    cols: u16,
+) -> Result<(Session, Box<dyn std::io::Read + Send>), String> {
+    validate_dimensions(rows, cols)?;
+    let command_line = if let Some(cmd) = command {
+        format!(
+            "\"{}\\System32\\cmd.exe\" /d /q /s /c \"chcp 65001>nul & {}\"",
+            windows_system_root().to_string_lossy(),
+            cmd
+        )
+    } else {
+        build_windows_interactive_shell_cmdline(shell_id.as_deref())
+    };
+
+    let mut env_extra = vec![
+        ("TERM".into(), "xterm-256color".into()),
+        ("PYTHONUTF8".into(), "1".into()),
+        ("PYTHONIOENCODING".into(), "utf-8".into()),
+    ];
+    if let Some(vars) = env_vars {
+        for (key, value) in vars {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() {
+                env_extra.push((trimmed.to_string(), value));
+            }
+        }
+    }
+
+    let spawned = win_conpty::spawn_conpty(&command_line, &path, &env_extra, rows, cols)?;
+    let writer = Arc::new(Mutex::new(spawned.writer));
+    let reader: Box<dyn std::io::Read + Send> = {
+        let writer = writer.clone();
+        Box::new(StartupReader {
+            reader: spawned.reader,
+            writer: move || {
+                let mut writer = writer
+                    .lock()
+                    .map_err(|_| std::io::Error::other("PTY writer poisoned"))?;
+                writer.write_all(b"\x1b[1;1R")?;
+                writer.flush()
+            },
+            pending: Vec::new(),
+            complete: false,
+        })
+    };
+
+    Ok((
+        Session {
+            child: spawned.child,
+            pty: spawned.pty,
+            writer,
+            tree: spawned.tree,
+        },
+        reader,
+    ))
+}
+
+#[cfg(unix)]
 fn open_session_with_shell(
     path: String,
     command: Option<String>,
@@ -429,73 +588,26 @@ fn open_session_with_shell(
     let pair = native_pty_system()
         .openpty(size(rows, cols)?)
         .map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    let mut builder = {
-        let mut builder = if let Some(command) = command {
-            use base64::Engine;
-            // portable-pty quotes argv using CRT rules, which cmd.exe does not
-            // follow. A fixed encoded bridge passes an exact raw /c command line
-            // through ProcessStartInfo; user code is data, never PowerShell code.
-            // The input barrier also prevents descendants before Job assignment.
-            let bridge = r#"[Console]::ReadLine() | Out-Null
-$command = $env:__FLASHRUN_COMMAND
-[Environment]::SetEnvironmentVariable('__FLASHRUN_COMMAND', $null)
-$start = New-Object System.Diagnostics.ProcessStartInfo
-$start.FileName = $env:SystemRoot + '\System32\cmd.exe'
-$start.Arguments = '/d /q /s /c "chcp 65001>nul & ' + $command + '"'
-$start.UseShellExecute = $false
-$child = [System.Diagnostics.Process]::Start($start)
-$child.WaitForExit()
-exit $child.ExitCode"#;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(
-                bridge
-                    .encode_utf16()
-                    .flat_map(u16::to_le_bytes)
-                    .collect::<Vec<_>>(),
-            );
-            let mut builder = CommandBuilder::new(
-                windows_system_root().join("System32/WindowsPowerShell/v1.0/powershell.exe"),
-            );
-            builder.args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-                &encoded,
-            ]);
-            builder.env("__FLASHRUN_COMMAND", command);
-            builder
-        } else {
-            build_windows_interactive_shell(shell_id.as_deref())
-        };
-        builder.env("PYTHONUTF8", "1");
-        builder.env("PYTHONIOENCODING", "utf-8");
-        builder
+    let shell = if command.is_some() {
+        "/bin/sh".to_string()
+    } else {
+        resolve_unix_interactive_shell(shell_id.as_deref())
     };
-    #[cfg(unix)]
-    let mut builder = {
-        let shell = if command.is_some() {
-            "/bin/sh".to_string()
-        } else {
-            resolve_unix_interactive_shell(shell_id.as_deref())
-        };
-        let mut builder = CommandBuilder::new(shell);
-        if let Some(cmd) = command {
-            builder.args(["-c", &cmd]);
-        } else {
-            builder.args(["-l", "-i"]);
-        }
-        if let Some(login_path) = unix_login_path() {
-            builder.env("PATH", login_path);
-        }
-        builder
-    };
+    let mut builder = CommandBuilder::new(shell);
+    if let Some(cmd) = command {
+        builder.args(["-c", &cmd]);
+    } else {
+        builder.args(["-l", "-i"]);
+    }
+    if let Some(login_path) = unix_login_path() {
+        builder.env("PATH", login_path);
+    }
     builder.cwd(path);
     builder.env("TERM", "xterm-256color");
     if let Some(vars) = env_vars {
         for (key, value) in vars {
             let trimmed = key.trim();
-            if !trimmed.is_empty() && trimmed != "__FLASHRUN_COMMAND" {
+            if !trimmed.is_empty() {
                 builder.env(trimmed, value);
             }
         }
@@ -520,24 +632,6 @@ exit $child.ExitCode"#;
             let _ = child.wait();
             return Err(error);
         }
-    };
-    #[cfg(windows)]
-    let reader: Box<dyn std::io::Read + Send> = {
-        let writer = writer.clone();
-        Box::new(StartupReader {
-            reader,
-            writer: move || {
-                let mut writer = writer
-                    .lock()
-                    .map_err(|_| std::io::Error::other("PTY writer poisoned"))?;
-                // Job assignment is already complete. Release the command barrier
-                // only after ConPTY can process input; early input may be lost.
-                writer.write_all(b"\x1b[1;1Rready\r")?;
-                writer.flush()
-            },
-            pending: Vec::new(),
-            complete: false,
-        })
     };
     drop(pair.slave);
 
@@ -617,15 +711,7 @@ impl ProcessManager {
         });
         let manager = self.clone();
         thread::spawn(move || {
-            let code = loop {
-                let result = session.child.lock().unwrap().try_wait();
-                match result {
-                    Ok(Some(status)) => break Some(status.exit_code() as i32),
-                    Ok(None) => thread::sleep(Duration::from_millis(50)),
-                    Err(_) => break None,
-                }
-            };
-            let _ = session.tree.stop();
+            let code = session.wait_exit();
             manager.registry.lock().unwrap().sessions.remove(&id);
             emit_status(&app, &output, id, "exited", code);
         });
@@ -655,13 +741,7 @@ impl ProcessManager {
 
     pub fn resize(&self, id: u32, rows: u16, cols: u16) -> Result<(), String> {
         let session = self.session(id)?;
-        let result = session
-            .master
-            .lock()
-            .map_err(|e| e.to_string())?
-            .resize(size(rows, cols)?)
-            .map_err(|e| e.to_string());
-        result
+        session.resize(rows, cols)
     }
 
     pub fn stop(&self, id: u32) -> Result<(), String> {
@@ -675,22 +755,7 @@ impl ProcessManager {
         else {
             return Ok(());
         };
-        session.tree.stop()?;
-        // Retain the child handle until exit has been observed by the supervisor.
-        for _ in 0..100 {
-            if session
-                .child
-                .lock()
-                .map_err(|e| e.to_string())?
-                .try_wait()
-                .map_err(|e| e.to_string())?
-                .is_some()
-            {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        Err("停止会话超时；保留会话以便重试。".into())
+        session.stop_and_wait()
     }
 
     pub fn shutdown(&self) {
@@ -707,10 +772,16 @@ impl ProcessManager {
     }
 }
 
-fn size(rows: u16, cols: u16) -> Result<PtySize, String> {
+fn validate_dimensions(rows: u16, cols: u16) -> Result<(), String> {
     if rows == 0 || cols == 0 || rows > 1000 || cols > 1000 {
         return Err("终端尺寸无效。".into());
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn size(rows: u16, cols: u16) -> Result<PtySize, String> {
+    validate_dimensions(rows, cols)?;
     Ok(PtySize {
         rows,
         cols,
@@ -750,65 +821,6 @@ fn emit_status(
                     exit_code,
                 },
             );
-        }
-    }
-}
-
-#[cfg(windows)]
-struct ProcessTree(windows_sys::Win32::Foundation::HANDLE);
-#[cfg(windows)]
-unsafe impl Send for ProcessTree {}
-#[cfg(windows)]
-unsafe impl Sync for ProcessTree {}
-#[cfg(windows)]
-impl ProcessTree {
-    fn new(pid: u32) -> Result<Self, String> {
-        use windows_sys::Win32::{
-            Foundation::CloseHandle,
-            System::{JobObjects::*, Threading::*},
-        };
-        unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            let tree = Self(job);
-            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                &limits as *const _ as _,
-                std::mem::size_of_val(&limits) as u32,
-            ) == 0
-            {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
-            if process.is_null() {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            let assigned = AssignProcessToJobObject(job, process);
-            let error = std::io::Error::last_os_error();
-            CloseHandle(process);
-            if assigned == 0 {
-                return Err(error.to_string());
-            }
-            Ok(tree)
-        }
-    }
-    fn stop(&self) -> Result<(), String> {
-        if unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) } == 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        Ok(())
-    }
-}
-#[cfg(windows)]
-impl Drop for ProcessTree {
-    fn drop(&mut self) {
-        unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.0);
         }
     }
 }
@@ -870,6 +882,7 @@ impl ProcessTree {
 mod tests {
     use super::*;
     use std::io::Read;
+    use std::time::Duration;
 
     #[test]
     fn startup_query_is_answered_once_across_every_chunk_boundary() {
@@ -973,7 +986,7 @@ mod tests {
                         .sessions
                         .insert(1, session.clone());
                     manager.shutdown();
-                    assert!(session.child.lock().unwrap().try_wait().unwrap().is_some());
+                    assert!(session.try_wait_code().unwrap().is_some());
                     drop(manager);
                     drop(session);
                     let bytes = output.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1028,13 +1041,13 @@ mod tests {
             thread::sleep(Duration::from_millis(25));
         }
         session.tree.stop().unwrap();
-        session.child.lock().unwrap().wait().unwrap();
+        session.wait_code().unwrap();
     }
 
     #[test]
     fn rejects_invalid_dimensions() {
-        assert!(size(0, 80).is_err());
-        assert!(size(24, 80).is_ok());
+        assert!(validate_dimensions(0, 80).is_err());
+        assert!(validate_dimensions(24, 80).is_ok());
     }
     #[test]
     fn unknown_session_is_never_treated_as_os_pid() {
@@ -1072,8 +1085,8 @@ mod tests {
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         let status = loop {
-            if let Some(status) = session.child.lock().unwrap().try_wait().unwrap() {
-                break status;
+            if let Some(code) = session.try_wait_code().unwrap() {
+                break code;
             }
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1081,7 +1094,7 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(25));
         };
-        assert_eq!(status.exit_code(), 0);
+        assert_eq!(status, 0);
         let mut output = String::new();
         while std::time::Instant::now() < deadline {
             match receive.recv_timeout(Duration::from_millis(100)) {
@@ -1120,10 +1133,10 @@ mod tests {
             .sessions
             .insert(1, session.clone());
         manager.resize(1, 40, 120).unwrap();
-        assert_eq!(session.master.lock().unwrap().get_size().unwrap().cols, 120);
+        assert_eq!(session.current_cols(), 120);
         manager.shutdown();
         assert!(manager.registry.lock().unwrap().closing);
-        assert!(session.child.lock().unwrap().try_wait().unwrap().is_some());
+        assert!(session.try_wait_code().unwrap().is_some());
         assert!(manager.input(1, "x".into()).is_err());
     }
 
@@ -1205,8 +1218,8 @@ mod tests {
         }
         session.writer.lock().unwrap().write_all(b"\x03").unwrap();
         loop {
-            if let Some(status) = session.child.lock().unwrap().try_wait().unwrap() {
-                assert_eq!(status.exit_code(), 0);
+            if let Some(code) = session.try_wait_code().unwrap() {
+                assert_eq!(code, 0);
                 break;
             }
             assert!(

@@ -9,6 +9,7 @@ import {
   CircleStop,
   Folder,
   FolderOpen,
+  GitBranch,
   LoaderCircle,
   Pencil,
   SquareTerminal,
@@ -32,6 +33,13 @@ interface PortTerminationResult {
   killedPids: number[];
 }
 
+interface GitStatus {
+  isRepo: boolean;
+  branch: string | null;
+  dirty: boolean;
+  changedCount: number;
+}
+
 const GLOBAL_EDITOR_SENTINEL = '__global__';
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -51,13 +59,50 @@ export const TopBar: React.FC<TopBarProps> = ({
   const [portResult, setPortResult] = React.useState('');
   const [isRenaming, setIsRenaming] = React.useState(false);
   const [renameDraft, setRenameDraft] = React.useState('');
+  const [gitStatus, setGitStatus] = React.useState<GitStatus | null>(null);
+  const [isRefreshingGit, setIsRefreshingGit] = React.useState(false);
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+
+  const refreshGitStatus = React.useCallback(async (projectPath: string) => {
+    setIsRefreshingGit(true);
+    try {
+      const status = await invoke<GitStatus>('get_git_status', { path: projectPath });
+      setGitStatus(status);
+    } catch {
+      setGitStatus(null);
+    } finally {
+      setIsRefreshingGit(false);
+    }
+  }, []);
 
   React.useEffect(() => {
     setIsRenaming(false);
     setRenameDraft(activeProject?.name ?? '');
   }, [activeProject?.id, activeProject?.name]);
+
+  React.useEffect(() => {
+    if (!activeProject?.path) {
+      setGitStatus(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const load = () => {
+      void invoke<GitStatus>('get_git_status', { path: activeProject.path })
+        .then((status) => {
+          if (!cancelled) setGitStatus(status);
+        })
+        .catch(() => {
+          if (!cancelled) setGitStatus(null);
+        });
+    };
+    load();
+    window.addEventListener('focus', load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', load);
+    };
+  }, [activeProject?.path]);
 
   const effectiveEditor: EditorKey = activeProject?.defaultEditor ?? globalDefaultEditor;
   const effectiveEditorLabel = EDITOR_LABEL_MAP[effectiveEditor] || effectiveEditor;
@@ -260,6 +305,26 @@ export const TopBar: React.FC<TopBarProps> = ({
             <span className="rounded-md border border-slate-300/80 bg-slate-200/70 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-600 dark:border-slate-700/80 dark:bg-slate-800/80 dark:text-slate-300">
               {activeProject.manager}
             </span>
+          )}
+
+          {gitStatus?.isRepo && gitStatus.branch && (
+            <button
+              type="button"
+              onClick={() => void refreshGitStatus(activeProject.path)}
+              disabled={isRefreshingGit}
+              className={`flex max-w-36 items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[10px] font-medium transition-colors ${
+                gitStatus.dirty
+                  ? 'border-amber-300/80 bg-amber-50/90 text-amber-700 hover:bg-amber-100 dark:border-amber-500/35 dark:bg-amber-500/15 dark:text-amber-300'
+                  : 'border-slate-300/70 bg-white/75 text-slate-600 hover:bg-white dark:border-slate-700/70 dark:bg-slate-800/70 dark:text-slate-300'
+              }`}
+              title={gitStatus.dirty
+                ? t('Git 分支：{{branch}}（{{count}} 处未提交更改，点击刷新）', { branch: gitStatus.branch, count: gitStatus.changedCount })
+                : t('Git 分支：{{branch}}（工作区干净，点击刷新）', { branch: gitStatus.branch })}
+            >
+              <GitBranch size={10} className="shrink-0" />
+              <span className="truncate">{gitStatus.branch}</span>
+              {gitStatus.dirty && <span className="shrink-0 font-bold">*{gitStatus.changedCount}</span>}
+            </button>
           )}
         </div>
         <div className="h-4 w-px shrink-0 bg-slate-300/80 dark:bg-slate-700/80" />

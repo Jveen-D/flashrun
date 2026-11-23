@@ -8,9 +8,12 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 mod config;
+mod git;
 mod ports;
 mod sessions;
 mod tray;
+#[cfg(windows)]
+mod win_conpty;
 use sessions::{Output, ProcessManager};
 
 const CONFIG_FILE_NAME: &str = "flashrun-config.json";
@@ -708,6 +711,15 @@ async fn export_text_file(path: String, content: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn read_text_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn send_input(
     state: tauri::State<'_, ProcessManager>,
     pid: u32,
@@ -1214,6 +1226,8 @@ pub fn run() {
             ports::inspect_port,
             open_in_editor,
             export_text_file,
+            read_text_file,
+            git::get_git_status,
             tray::sync_tray_menu,
         ])
         .build(tauri::generate_context!())

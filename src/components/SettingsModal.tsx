@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
+import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
-import { X } from 'lucide-react';
+import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { Download, ExternalLink, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { CustomSelect } from './CustomSelect';
 import { useStore, type GlobalSettings } from '../store';
 import { EDITOR_LABEL_MAP, EDITOR_OPTIONS } from '../utils/editors';
+import {
+  buildConfigExportBundle,
+  parseConfigImportBundle,
+  type FlashRunConfigExport,
+} from '../utils/configTransfer';
+import { toast } from '../utils/toast';
 import {
   createShortcutFromKeyboardEvent,
   formatShortcut,
@@ -23,27 +32,38 @@ interface ShellOption {
   available: boolean;
 }
 
-type SettingsSection = 'general' | 'editor' | 'shortcut';
+type SettingsSection = 'general' | 'editor' | 'shortcut' | 'backup';
 
-const SECTION_IDS: SettingsSection[] = ['general', 'editor', 'shortcut'];
+const SECTION_IDS: SettingsSection[] = ['general', 'editor', 'shortcut', 'backup'];
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
   const { t } = useTranslation();
+  const projects = useStore((state) => state.projects);
+  const launchGroups = useStore((state) => state.launchGroups);
   const globalSettings = useStore((state) => state.globalSettings);
   const updateGlobalSettings = useStore((state) => state.updateGlobalSettings);
+  const importConfigBundle = useStore((state) => state.importConfigBundle);
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
   const [recordingTarget, setRecordingTarget] = useState<'terminal' | 'globalWindow' | null>(null);
   const [recordingMessage, setRecordingMessage] = useState('');
   const [availableShells, setAvailableShells] = useState<ShellOption[]>([
     { id: 'auto', label: 'Auto', available: true },
   ]);
+  const [appVersion, setAppVersion] = useState('');
+  const [includeSettingsOnTransfer, setIncludeSettingsOnTransfer] = useState(true);
+  const [pendingImportBundle, setPendingImportBundle] = useState<FlashRunConfigExport | null>(null);
+  const [remapFromPrefix, setRemapFromPrefix] = useState('');
+  const [remapToPrefix, setRemapToPrefix] = useState('');
 
   useEffect(() => {
     if (!open) {
       setActiveSection('general');
       setRecordingTarget(null);
       setRecordingMessage('');
+      setPendingImportBundle(null);
+      setRemapFromPrefix('');
+      setRemapToPrefix('');
       return;
     }
 
@@ -55,6 +75,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         }
       })
       .catch((error) => console.warn('Failed to list available shells:', error));
+    void getVersion()
+      .then((version) => {
+        if (!cancelled) setAppVersion(version);
+      })
+      .catch(() => {});
 
     return () => {
       cancelled = true;
@@ -100,6 +125,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       id: 'shortcut' as const,
       title: t('快捷键配置'),
       description: t('查看和自定义终端切换快捷键'),
+    },
+    {
+      id: 'backup' as const,
+      title: t('数据与更新'),
+      description: t('配置导入导出、跨机路径重映射与版本更新'),
     },
   ]), [t]);
 
@@ -352,6 +382,186 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             </section>
           </div>
         );
+      case 'backup': {
+        const handleExportConfig = async () => {
+          try {
+            const targetPath = await saveDialog({
+              defaultPath: 'flashrun-backup.json',
+              filters: [{ name: 'JSON', extensions: ['json'] }],
+            });
+            if (!targetPath) return;
+            const bundle = buildConfigExportBundle({
+              projects,
+              launchGroups,
+              settings: globalSettings,
+              includeSettings: includeSettingsOnTransfer,
+            });
+            await invoke('export_text_file', {
+              path: targetPath,
+              content: JSON.stringify(bundle, null, 2),
+            });
+            toast.success(t('配置已导出至 {{path}}', { path: targetPath }));
+          } catch (error) {
+            toast.error(t('导出配置失败：{{error}}', { error: String(error) }));
+          }
+        };
+
+        const handlePickImportFile = async () => {
+          try {
+            const selected = await openDialog({
+              multiple: false,
+              filters: [{ name: 'JSON', extensions: ['json'] }],
+            });
+            if (typeof selected !== 'string') return;
+            const raw = await invoke<string>('read_text_file', { path: selected });
+            const bundle = parseConfigImportBundle(raw);
+            setPendingImportBundle(bundle);
+          } catch (error) {
+            toast.error(t('读取导入配置失败：{{error}}', { error: String(error) }));
+          }
+        };
+
+        const handleApplyImport = async (mode: 'merge' | 'replace') => {
+          if (!pendingImportBundle) return;
+          if (mode === 'replace') {
+            const approved = await confirm(
+              t('覆盖导入会替换当前全部项目与启动组配置，确定继续吗？'),
+              { title: t('覆盖导入配置'), kind: 'warning' },
+            );
+            if (!approved) return;
+          }
+
+          const result = importConfigBundle(pendingImportBundle, {
+            mode,
+            fromPrefix: remapFromPrefix.trim() || undefined,
+            toPrefix: remapToPrefix.trim() || undefined,
+            includeSettings: includeSettingsOnTransfer,
+          });
+          setPendingImportBundle(null);
+          toast.success(t('已导入 {{projects}} 个项目与 {{groups}} 个启动组。', {
+            projects: result.addedProjects,
+            groups: result.addedGroups,
+          }));
+        };
+
+        return (
+          <div className="space-y-6">
+            <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/50 p-5">
+              <h4 className="text-base font-bold text-slate-900 dark:text-white mb-1">{t('配置导入与导出')}</h4>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">{t('导出当前项目列表、命令与启动组用于备份或团队共享，导入时支持跨机器路径前缀重映射。')}</p>
+
+              <label className="mb-4 flex cursor-pointer items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={includeSettingsOnTransfer}
+                  onChange={(event) => setIncludeSettingsOnTransfer(event.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                <span>{t('导出 / 导入时包含全局偏好设置（主题、语言、编辑器、Shell）')}</span>
+              </label>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void handleExportConfig()}
+                  className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500"
+                >
+                  <Download size={15} />
+                  <span>{t('导出配置 JSON')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handlePickImportFile()}
+                  className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  <Upload size={15} />
+                  <span>{t('选择配置文件导入')}</span>
+                </button>
+              </div>
+
+              {pendingImportBundle && (
+                <div className="mt-4 space-y-3 rounded-xl border border-blue-200/80 bg-blue-50/60 p-4 dark:border-blue-500/30 dark:bg-blue-500/10">
+                  <div className="text-xs font-semibold text-blue-800 dark:text-blue-200">
+                    {t('已解析配置文件：包含 {{projects}} 个项目、{{groups}} 个启动组', {
+                      projects: pendingImportBundle.projects.length,
+                      groups: pendingImportBundle.launchGroups.length,
+                    })}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                        {t('原路径前缀（可选，如 C:\\Code）')}
+                      </label>
+                      <input
+                        value={remapFromPrefix}
+                        onChange={(event) => setRemapFromPrefix(event.target.value)}
+                        placeholder="C:\Code"
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                        {t('替换为新前缀（可选，如 /Users/dev/Code）')}
+                      </label>
+                      <input
+                        value={remapToPrefix}
+                        onChange={(event) => setRemapToPrefix(event.target.value)}
+                        placeholder="/Users/dev/Code"
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => void handleApplyImport('merge')}
+                      className="rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-500"
+                    >
+                      {t('合并导入（保留现有项目）')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleApplyImport('replace')}
+                      className="rounded-lg border border-rose-300 bg-rose-50 px-3.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 dark:border-rose-500/40 dark:bg-rose-500/15 dark:text-rose-300"
+                    >
+                      {t('覆盖导入')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPendingImportBundle(null)}
+                      className="ml-auto text-xs text-slate-500 hover:underline"
+                    >
+                      {t('取消')}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/40 p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h4 className="text-base font-bold text-slate-900 dark:text-white mb-1">{t('版本与更新')}</h4>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    {t('当前版本：{{version}}', { version: appVersion ? `v${appVersion}` : 'FlashRun' })}
+                  </p>
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    {t('支持通过 GitHub Releases 获取最新全平台安装包；如需开启应用内静默签名更新，可参考仓库 docs/updater.md 配置签名私钥。')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void openUrl('https://github.com/Jveen-D/flashrun/releases/latest').catch((error) => toast.error(String(error)))}
+                  className="flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700 transition-colors hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  <ExternalLink size={13} />
+                  <span>{t('检查 Releases')}</span>
+                </button>
+              </div>
+            </section>
+          </div>
+        );
+      }
       default:
         return null;
     }

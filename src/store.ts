@@ -7,6 +7,7 @@ import {
   sanitizeShortcutDefinition,
 } from './utils/shortcuts';
 import { commandOutputKey } from './utils/terminal';
+import { remapProjectPath, type FlashRunConfigExport } from './utils/configTransfer';
 
 export interface CommandRuntimeInfo {
   startedAt: number | null;
@@ -679,6 +680,16 @@ interface StoreState {
   updateLaunchGroup: (id: string, updates: { name?: string; items?: LaunchGroupItem[] }) => void;
   removeLaunchGroup: (id: string) => void;
 
+  importConfigBundle: (
+    bundle: FlashRunConfigExport,
+    options: {
+      mode: 'merge' | 'replace';
+      fromPrefix?: string;
+      toPrefix?: string;
+      includeSettings?: boolean;
+    },
+  ) => { addedProjects: number; addedGroups: number };
+
   updateGlobalSettings: (settings: Partial<GlobalSettings>) => void;
 
   isTerminalOpen: boolean;
@@ -1171,6 +1182,91 @@ export const useStore = create<StoreState>((set) => ({
     void persistLaunchGroups(launchGroups);
     return { launchGroups };
   }),
+
+  importConfigBundle: (bundle, options) => {
+    let addedProjects = 0;
+    let addedGroups = 0;
+
+    set((state) => {
+      const remappedIncomingProjects = sanitizeProjects(
+        bundle.projects.map((project) => ({
+          ...project,
+          path: remapProjectPath(project.path, {
+            fromPrefix: options.fromPrefix,
+            toPrefix: options.toPrefix,
+          }),
+        })),
+      );
+
+      let projects: Project[];
+      let launchGroups: LaunchGroup[];
+
+      if (options.mode === 'replace') {
+        projects = remappedIncomingProjects;
+        addedProjects = projects.length;
+        launchGroups = sanitizeLaunchGroups(bundle.launchGroups, projects);
+        addedGroups = launchGroups.length;
+      } else {
+        const nextProjects = [...state.projects];
+        const idRemap = new Map<string, string>();
+        for (const incoming of remappedIncomingProjects) {
+          const existing = nextProjects.find((p) => areProjectPathsEqual(p.path, incoming.path));
+          if (existing) {
+            idRemap.set(incoming.id, existing.id);
+            continue;
+          }
+          const collision = nextProjects.some((p) => p.id === incoming.id);
+          const nextId = collision ? nanoid() : incoming.id;
+          idRemap.set(incoming.id, nextId);
+          nextProjects.push({ ...incoming, id: nextId });
+          addedProjects += 1;
+        }
+        projects = nextProjects;
+
+        const existingGroupNames = new Set(state.launchGroups.map((g) => g.name.toLowerCase()));
+        const remappedGroups = bundle.launchGroups.map((group) => ({
+          ...group,
+          id: nanoid(),
+          items: group.items.map((item) => ({
+            projectId: idRemap.get(item.projectId) ?? item.projectId,
+            commandId: item.commandId,
+          })),
+        }));
+        const validNewGroups = sanitizeLaunchGroups(remappedGroups, projects)
+          .filter((group) => !existingGroupNames.has(group.name.toLowerCase()));
+        addedGroups = validNewGroups.length;
+        launchGroups = [...state.launchGroups, ...validNewGroups];
+      }
+
+      const activeProjectId = sanitizeActiveProjectId(state.activeProjectId, projects);
+      const projectTerminals = sanitizeProjectTerminals(state.projectTerminals, projects);
+      const globalSettings = options.includeSettings && bundle.settings
+        ? sanitizeGlobalSettings({ ...state.globalSettings, ...bundle.settings })
+        : state.globalSettings;
+
+      void persistProjects(projects);
+      void persistLaunchGroups(launchGroups);
+      void persistActiveProject(activeProjectId);
+      void persistSettings(globalSettings);
+      void persistUiPreferences(buildUiPreferencesSnapshot({
+        isTerminalOpen: state.isTerminalOpen,
+        terminalHeight: state.terminalHeight,
+        isSidebarExpanded: state.isSidebarExpanded,
+        sidebarWidth: state.sidebarWidth,
+        projectTerminals,
+      }, projects));
+
+      return {
+        projects,
+        launchGroups,
+        activeProjectId,
+        projectTerminals,
+        globalSettings,
+      };
+    });
+
+    return { addedProjects, addedGroups };
+  },
 
   updateGlobalSettings: (settings) => set((state) => {
     const globalSettings = sanitizeGlobalSettings({
