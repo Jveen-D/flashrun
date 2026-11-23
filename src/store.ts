@@ -60,9 +60,16 @@ export interface Project {
 
 export interface GlobalSettings {
   defaultEditor: EditorKey;
+  defaultShell: string;
   theme: 'dark' | 'light' | 'system';
   language: 'zh' | 'en';
   terminalToggleShortcut: ShortcutDefinition;
+}
+
+export interface WindowStatePreference {
+  width: number;
+  height: number;
+  maximized: boolean;
 }
 
 export interface TerminalTabItem {
@@ -86,6 +93,7 @@ interface UiPreferences {
   isSidebarExpanded: boolean;
   sidebarWidth: number;
   projectTerminals: Record<string, ProjectTerminalState>;
+  windowState?: WindowStatePreference;
 }
 
 interface PersistedState {
@@ -97,6 +105,7 @@ interface PersistedState {
 
 const DEFAULT_SETTINGS: GlobalSettings = {
   defaultEditor: 'code',
+  defaultShell: 'auto',
   theme: 'system',
   language: 'zh',
   terminalToggleShortcut: getDefaultTerminalShortcut(),
@@ -309,19 +318,47 @@ function sanitizeProjectTerminals(
   }, {});
 }
 
+function sanitizeWindowState(
+  value: Partial<WindowStatePreference> | null | undefined,
+): WindowStatePreference | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const width = typeof value.width === 'number' && Number.isFinite(value.width)
+    ? Math.max(860, Math.min(4096, Math.round(value.width)))
+    : null;
+  const height = typeof value.height === 'number' && Number.isFinite(value.height)
+    ? Math.max(560, Math.min(2400, Math.round(value.height)))
+    : null;
+  if (width === null || height === null) {
+    return undefined;
+  }
+  return {
+    width,
+    height,
+    maximized: Boolean(value.maximized),
+  };
+}
+
 function sanitizeUiPreferences(uiPreferences: Partial<UiPreferences> | null | undefined, projects: Project[]): UiPreferences {
+  const windowState = sanitizeWindowState(uiPreferences?.windowState);
   return {
     isTerminalOpen: Boolean(uiPreferences?.isTerminalOpen),
     terminalHeight: clampTerminalHeight(uiPreferences?.terminalHeight),
     isSidebarExpanded: uiPreferences?.isSidebarExpanded ?? true,
     sidebarWidth: clampSidebarWidth(uiPreferences?.sidebarWidth),
     projectTerminals: sanitizeProjectTerminals(uiPreferences?.projectTerminals, projects),
+    ...(windowState ? { windowState } : {}),
   };
 }
 
 function sanitizeGlobalSettings(settings: Partial<GlobalSettings> | null | undefined): GlobalSettings {
+  const defaultShell = typeof settings?.defaultShell === 'string' && settings.defaultShell.trim()
+    ? settings.defaultShell.trim()
+    : DEFAULT_SETTINGS.defaultShell;
   return {
     defaultEditor: settings?.defaultEditor ?? DEFAULT_SETTINGS.defaultEditor,
+    defaultShell,
     theme: settings?.theme ?? DEFAULT_SETTINGS.theme,
     language: settings?.language ?? DEFAULT_SETTINGS.language,
     terminalToggleShortcut: sanitizeShortcutDefinition(settings?.terminalToggleShortcut),
@@ -345,6 +382,7 @@ function buildUiPreferencesSnapshot(params: {
   isSidebarExpanded: boolean;
   sidebarWidth: number;
   projectTerminals: Record<string, ProjectTerminalState>;
+  windowState?: WindowStatePreference;
 }, projects: Project[]): UiPreferences {
   return sanitizeUiPreferences(params, projects);
 }
@@ -483,7 +521,10 @@ async function persistActiveProject(activeProjectId: string | null) {
 async function persistUiPreferences(uiPreferences: UiPreferences) {
   await enqueuePersist((state) => sanitizePersistedState({
     ...state,
-    uiPreferences,
+    uiPreferences: {
+      ...uiPreferences,
+      windowState: uiPreferences.windowState ?? state.uiPreferences.windowState,
+    },
   }));
 }
 
@@ -542,11 +583,13 @@ interface StoreState {
   isSidebarExpanded: boolean;
   sidebarWidth: number;
   projectTerminals: Record<string, ProjectTerminalState>;
+  windowState?: WindowStatePreference;
   setTerminalOpen: (open: boolean) => void;
   toggleTerminal: () => void;
   setTerminalHeight: (height: number) => void;
   setSidebarExpanded: (expanded: boolean) => void;
   setSidebarWidth: (width: number) => void;
+  setWindowState: (windowState: WindowStatePreference) => void;
   addTerminalTab: (projectId: string) => void;
   closeTerminalTab: (projectId: string, tabId: string) => void;
   setActiveTerminalTab: (projectId: string, tabId: string) => void;
@@ -579,6 +622,7 @@ export const useStore = create<StoreState>((set) => ({
   isSidebarExpanded: true,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   projectTerminals: {},
+  windowState: undefined,
 
   hydrate: async () => {
     if (hydratePromise) return hydratePromise;
@@ -599,6 +643,7 @@ export const useStore = create<StoreState>((set) => ({
         isSidebarExpanded: persistedState.uiPreferences.isSidebarExpanded,
         sidebarWidth: persistedState.uiPreferences.sidebarWidth,
         projectTerminals: persistedState.uiPreferences.projectTerminals,
+        windowState: persistedState.uiPreferences.windowState,
       });
       persistenceAllowed = true;
     } catch (error) {
@@ -1036,6 +1081,33 @@ export const useStore = create<StoreState>((set) => ({
     }, state.projects));
 
     return { sidebarWidth };
+  }),
+
+  setWindowState: (nextWindowState) => set((state) => {
+    const sanitized = sanitizeWindowState(nextWindowState);
+    if (!sanitized) {
+      return state;
+    }
+
+    if (
+      state.windowState
+      && state.windowState.width === sanitized.width
+      && state.windowState.height === sanitized.height
+      && state.windowState.maximized === sanitized.maximized
+    ) {
+      return state;
+    }
+
+    void persistUiPreferences(buildUiPreferencesSnapshot({
+      isTerminalOpen: state.isTerminalOpen,
+      terminalHeight: state.terminalHeight,
+      isSidebarExpanded: state.isSidebarExpanded,
+      sidebarWidth: state.sidebarWidth,
+      projectTerminals: state.projectTerminals,
+      windowState: sanitized,
+    }, state.projects));
+
+    return { windowState: sanitized };
   }),
 
   addTerminalTab: (projectId) => set((state) => {

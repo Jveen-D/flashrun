@@ -15,7 +15,13 @@ describe('configuration protection', () => {
     await useStore.getState().hydrate();
     const state = useStore.getState();
     expect(state.hydrated).toBe(true);
-    expect(state.globalSettings).toEqual({ defaultEditor: 'code', theme: 'light', language: 'en', terminalToggleShortcut: expect.any(Object) });
+    expect(state.globalSettings).toEqual({
+      defaultEditor: 'code',
+      defaultShell: 'auto',
+      theme: 'light',
+      language: 'en',
+      terminalToggleShortcut: expect.any(Object),
+    });
     expect(state.activeProjectId).toBe('project');
     expect(state.projectTerminals.project.activeTabId).toBe('shell');
     state.setTerminalOpen(true);
@@ -124,6 +130,18 @@ describe('configuration protection', () => {
 
     useStore.getState().removeCommand(projectId, commandId);
     expect(useStore.getState().commandRuntimeByKey[key]).toBeUndefined();
+
+    useStore.getState().setWindowState({ width: 1280, height: 820, maximized: false });
+    expect(useStore.getState().windowState).toEqual({ width: 1280, height: 820, maximized: false });
+    useStore.getState().setTerminalOpen(true);
     await flushPersistence();
+    expect(mocks.invoke).toHaveBeenLastCalledWith('save_app_config', {
+      config: expect.objectContaining({
+        uiPreferences: expect.objectContaining({
+          isTerminalOpen: true,
+          windowState: { width: 1280, height: 820, maximized: false },
+        }),
+      }),
+    });
   });
 });

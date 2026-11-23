@@ -425,6 +425,7 @@ async fn run_command(
             app,
             path,
             Some(cmd),
+            None,
             Output::Command {
                 project_id,
                 command_id: cmd_id,
@@ -471,6 +472,11 @@ fn resize_session(
 }
 
 #[tauri::command]
+fn list_available_shells() -> Vec<sessions::ShellOption> {
+    sessions::list_available_shells()
+}
+
+#[tauri::command]
 async fn create_shell_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, ProcessManager>,
@@ -478,6 +484,7 @@ async fn create_shell_session(
     working_dir: String,
     rows: u16,
     cols: u16,
+    shell: Option<String>,
 ) -> Result<u32, String> {
     let manager = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -485,6 +492,7 @@ async fn create_shell_session(
             app,
             working_dir,
             None,
+            shell,
             Output::Shell(session_id),
             rows,
             cols,
@@ -831,19 +839,90 @@ fn open_in_editor(path: String, editor_key: String) -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let candidates = editor_command_candidates(&editor_key);
+        let mut tried = Vec::new();
+        let login_path = sessions::unix_login_path();
 
-        for candidate in &candidates {
-            match Command::new(candidate).arg(&path).spawn() {
+        for candidate in editor_command_candidates(&editor_key) {
+            if candidate.ends_with(".exe") || candidate.ends_with(".cmd") {
+                continue;
+            }
+            tried.push(candidate.to_string());
+            let mut command = Command::new(candidate);
+            if let Some(path_env) = login_path {
+                command.env("PATH", path_env);
+            }
+            match command.arg(&path).spawn() {
                 Ok(_) => return Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.to_string()),
             }
         }
 
+        #[cfg(target_os = "macos")]
+        {
+            let app_specs: Vec<(&str, Option<&str>)> = match editor_key.as_str() {
+                "code" => vec![(
+                    "Visual Studio Code.app",
+                    Some("Contents/Resources/app/bin/code"),
+                )],
+                "cursor" => vec![("Cursor.app", Some("Contents/Resources/app/bin/cursor"))],
+                "zed" => vec![("Zed.app", Some("Contents/MacOS/cli"))],
+                "antigravity" => vec![(
+                    "Antigravity.app",
+                    Some("Contents/Resources/app/bin/antigravity"),
+                )],
+                "codebuddy" => vec![
+                    (
+                        "CodeBuddy.app",
+                        Some("Contents/Resources/app/bin/codebuddy"),
+                    ),
+                    ("CodeBuddy CN.app", None),
+                ],
+                _ => Vec::new(),
+            };
+
+            let mut app_roots = vec![PathBuf::from("/Applications")];
+            if let Ok(home) = std::env::var("HOME") {
+                app_roots.push(PathBuf::from(home).join("Applications"));
+            }
+
+            for root in &app_roots {
+                for (app_bundle, cli_rel) in &app_specs {
+                    let bundle_path = root.join(app_bundle);
+                    if !bundle_path.exists() {
+                        continue;
+                    }
+                    if let Some(rel) = cli_rel {
+                        let cli_path = bundle_path.join(rel);
+                        if cli_path.is_file() {
+                            tried.push(cli_path.to_string_lossy().into_owned());
+                            let mut command = Command::new(&cli_path);
+                            if let Some(path_env) = login_path {
+                                command.env("PATH", path_env);
+                            }
+                            if command.arg(&path).spawn().is_ok() {
+                                return Ok(());
+                            }
+                        }
+                    }
+
+                    let bundle_str = bundle_path.to_string_lossy().into_owned();
+                    tried.push(format!("open -a {bundle_str}"));
+                    if Command::new("open")
+                        .args(["-a", &bundle_str, &path])
+                        .spawn()
+                        .is_ok()
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         Err(format!(
-            "无法找到编辑器命令 `{}`。请确保已将对应 CLI 加入系统环境变量 PATH 中。",
-            candidates.join("`、`")
+            "无法找到编辑器 `{}`。已尝试：{}。请确保已安装该编辑器或其 CLI 在 PATH 中。",
+            editor_key,
+            tried.join("、")
         ))
     }
 }
@@ -857,12 +936,8 @@ pub fn run() {
             app.manage(config::ConfigFile::new(path));
             Ok(())
         })
-        .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             parse_project_info,
@@ -871,6 +946,7 @@ pub fn run() {
             run_command,
             send_input,
             resize_session,
+            list_available_shells,
             create_shell_session,
             kill_command,
             ports::terminate_port,

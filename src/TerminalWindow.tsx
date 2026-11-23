@@ -9,6 +9,7 @@ import { TERMINAL_FIT_EVENT, getCommandOutput, setLastTerminalSize, type OutputB
 import { ensureShellSession } from './utils/shellSessions';
 import { sendSessionInput } from './utils/sessionInput';
 import { stripAnsi } from './utils/logInsights';
+import { useStore } from './store';
 import 'xterm/css/xterm.css';
 
 export interface TerminalWindowHandle {
@@ -176,7 +177,8 @@ const TerminalWindow = forwardRef<TerminalWindowHandle, Props>(function Terminal
     termRef.current = term;
     searchAddonRef.current = search;
 
-    const shell = commandId ? undefined : ensureShellSession(sessionId!, workingDir, term.rows, term.cols);
+    const defaultShell = useStore.getState().globalSettings.defaultShell;
+    const shell = commandId ? undefined : ensureShellSession(sessionId!, workingDir, term.rows, term.cols, defaultShell);
     const output = commandId ? getCommandOutput(projectId, commandId) : shell!.output;
     outputRef.current = output;
 

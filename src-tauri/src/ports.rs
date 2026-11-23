@@ -91,6 +91,53 @@ fn parse_netstat(text: &str, port: u16, protocol: Protocol) -> Vec<u32> {
     ids.into_iter().collect()
 }
 
+#[cfg(windows)]
+fn windows_process_name_via_api(pid: u32) -> Option<String> {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+        },
+    };
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut buffer = [0_u16; 1024];
+        let mut size = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size);
+        CloseHandle(handle);
+        if ok == 0 || size == 0 {
+            return None;
+        }
+        let full_path = String::from_utf16_lossy(&buffer[..size as usize]);
+        std::path::Path::new(&full_path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(windows)]
+fn windows_tasklist_name_map() -> Result<std::collections::HashMap<u32, String>, String> {
+    let listing = run("tasklist", &["/FO", "CSV", "/NH"])?;
+    if !listing.status.success() {
+        return Err(String::from_utf8_lossy(&listing.stderr).into_owned());
+    }
+    let mut map = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&listing.stdout).lines() {
+        let fields: Vec<_> = line.split("\",\"").collect();
+        if let Some(pid) = fields
+            .get(1)
+            .and_then(|value| value.trim_matches('"').parse::<u32>().ok())
+        {
+            map.insert(pid, fields[0].trim_matches('"').to_string());
+        }
+    }
+    Ok(map)
+}
+
 #[tauri::command]
 pub async fn inspect_port(port: u16, protocol: Protocol) -> Result<Vec<PortProcess>, String> {
     tauri::async_runtime::spawn_blocking(move || inspect_port_sync(port, protocol))
@@ -108,26 +155,34 @@ fn inspect_port_sync(port: u16, protocol: Protocol) -> Result<Vec<PortProcess>, 
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).into_owned());
         }
+        let pids = parse_netstat(&String::from_utf8_lossy(&output.stdout), port, protocol);
+        if pids.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut processes = Vec::new();
-        for pid in parse_netstat(&String::from_utf8_lossy(&output.stdout), port, protocol) {
-            let filter = format!("PID eq {pid}");
-            let listing = run("tasklist", &["/FI", &filter, "/FO", "CSV", "/NH"])?;
-            if !listing.status.success() {
-                return Err(String::from_utf8_lossy(&listing.stderr).into_owned());
-            }
-            let text = String::from_utf8_lossy(&listing.stdout);
-            let name = text.lines().find_map(|line| {
-                let fields: Vec<_> = line.split("\",\"").collect();
-                (fields
-                    .get(1)
-                    .and_then(|value| value.trim_matches('"').parse::<u32>().ok())
-                    == Some(pid))
-                .then(|| fields[0].trim_matches('"').to_string())
-            });
-            if let Some(name) = name {
+        let mut fallback_pids = Vec::new();
+        for pid in pids {
+            if let Some(name) = windows_process_name_via_api(pid) {
                 processes.push(PortProcess { pid, name });
+            } else {
+                fallback_pids.push(pid);
             }
         }
+
+        if !fallback_pids.is_empty() {
+            let tasklist_names = windows_tasklist_name_map()?;
+            for pid in fallback_pids {
+                if let Some(name) = tasklist_names.get(&pid) {
+                    processes.push(PortProcess {
+                        pid,
+                        name: name.clone(),
+                    });
+                }
+            }
+        }
+
+        processes.sort_by_key(|process| process.pid);
         Ok(processes)
     }
     #[cfg(unix)]
@@ -244,5 +299,11 @@ mod tests {
         let listing = "TCP 0.0.0.0:3000 0.0.0.0:0 LISTENING 20\nTCP 127.0.0.1:3000 127.0.0.1:5555 ESTABLISHED 30\nUDP [::]:3000 *:* 40\n";
         assert_eq!(parse_netstat(listing, 3000, Protocol::Tcp), vec![20]);
         assert_eq!(parse_netstat(listing, 3000, Protocol::Udp), vec![40]);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn resolves_current_process_name_without_spawning_tasklist() {
+        let name = windows_process_name_via_api(std::process::id()).unwrap();
+        assert!(name.to_ascii_lowercase().ends_with(".exe"));
     }
 }

@@ -1,7 +1,9 @@
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use serde::Serialize;
 use std::{
     collections::HashMap,
     io::Write,
+    path::PathBuf,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
@@ -12,6 +14,232 @@ use std::{
 use tauri::Emitter;
 
 use super::{stream_terminal_output, CommandStatusPayload, TerminalOutputPayload};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ShellOption {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+}
+
+fn find_in_path(names: &[&str]) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn windows_system_root() -> PathBuf {
+    PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()))
+}
+
+#[cfg(windows)]
+fn find_windows_pwsh() -> Option<PathBuf> {
+    if let Some(found) = find_in_path(&["pwsh.exe"]) {
+        return Some(found);
+    }
+    for env_key in ["ProgramW6432", "ProgramFiles"] {
+        if let Ok(root) = std::env::var(env_key) {
+            let candidate = PathBuf::from(root).join("PowerShell\\7\\pwsh.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn find_windows_powershell() -> Option<PathBuf> {
+    let candidate = windows_system_root().join("System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    candidate.is_file().then_some(candidate)
+}
+
+#[cfg(windows)]
+fn find_windows_git_bash() -> Option<PathBuf> {
+    if let Some(git_exe) = find_in_path(&["git.exe"]) {
+        if let Some(git_root) = git_exe.parent().and_then(|parent| parent.parent()) {
+            let candidate = git_root.join("bin\\bash.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    for env_key in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(root) = std::env::var(env_key) {
+            let candidate = PathBuf::from(root).join("Git\\bin\\bash.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let candidate = PathBuf::from(local_app_data).join("Programs\\Git\\bin\\bash.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn find_windows_wsl() -> Option<PathBuf> {
+    let candidate = windows_system_root().join("System32\\wsl.exe");
+    candidate.is_file().then_some(candidate)
+}
+
+#[cfg(unix)]
+fn find_unix_shell(name: &str) -> Option<PathBuf> {
+    if let Some(found) = find_in_path(&[name]) {
+        return Some(found);
+    }
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+        let candidate = PathBuf::from(dir).join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+pub fn unix_login_path() -> Option<&'static str> {
+    static LOGIN_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    LOGIN_PATH
+        .get_or_init(|| {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+            let login_output = std::process::Command::new(&shell)
+                .args(["-lc", "printf %s \"$PATH\""])
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                .filter(|text| !text.is_empty());
+
+            let mut entries: Vec<PathBuf> = Vec::new();
+            let mut push_unique = |path: PathBuf| {
+                if !path.as_os_str().is_empty() && !entries.contains(&path) {
+                    entries.push(path);
+                }
+            };
+
+            if let Some(ref resolved) = login_output {
+                for p in std::env::split_paths(resolved) {
+                    push_unique(p);
+                }
+            }
+            if let Some(current) = std::env::var_os("PATH") {
+                for p in std::env::split_paths(&current) {
+                    push_unique(p);
+                }
+            }
+            for common in ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"] {
+                let p = PathBuf::from(common);
+                if p.is_dir() {
+                    push_unique(p);
+                }
+            }
+            if let Ok(home) = std::env::var("HOME") {
+                let home_path = PathBuf::from(home);
+                for suffix in [
+                    ".volta/bin",
+                    ".bun/bin",
+                    ".cargo/bin",
+                    ".local/bin",
+                    ".local/share/pnpm",
+                    "Library/pnpm",
+                ] {
+                    let p = home_path.join(suffix);
+                    if p.is_dir() {
+                        push_unique(p);
+                    }
+                }
+            }
+
+            std::env::join_paths(entries)
+                .ok()
+                .and_then(|os| os.into_string().ok())
+        })
+        .as_deref()
+}
+
+pub fn list_available_shells() -> Vec<ShellOption> {
+    #[cfg(windows)]
+    {
+        vec![
+            ShellOption {
+                id: "auto".into(),
+                label: "Auto (CMD)".into(),
+                available: true,
+            },
+            ShellOption {
+                id: "cmd".into(),
+                label: "Command Prompt (cmd.exe)".into(),
+                available: true,
+            },
+            ShellOption {
+                id: "pwsh".into(),
+                label: "PowerShell 7 (pwsh)".into(),
+                available: find_windows_pwsh().is_some(),
+            },
+            ShellOption {
+                id: "powershell".into(),
+                label: "Windows PowerShell".into(),
+                available: find_windows_powershell().is_some(),
+            },
+            ShellOption {
+                id: "git-bash".into(),
+                label: "Git Bash".into(),
+                available: find_windows_git_bash().is_some(),
+            },
+            ShellOption {
+                id: "wsl".into(),
+                label: "WSL".into(),
+                available: find_windows_wsl().is_some(),
+            },
+        ]
+    }
+    #[cfg(unix)]
+    {
+        vec![
+            ShellOption {
+                id: "auto".into(),
+                label: "Auto ($SHELL)".into(),
+                available: true,
+            },
+            ShellOption {
+                id: "zsh".into(),
+                label: "Zsh".into(),
+                available: find_unix_shell("zsh").is_some(),
+            },
+            ShellOption {
+                id: "bash".into(),
+                label: "Bash".into(),
+                available: find_unix_shell("bash").is_some(),
+            },
+            ShellOption {
+                id: "fish".into(),
+                label: "Fish".into(),
+                available: find_unix_shell("fish").is_some(),
+            },
+            ShellOption {
+                id: "sh".into(),
+                label: "POSIX sh".into(),
+                available: find_unix_shell("sh").is_some(),
+            },
+        ]
+    }
+}
 
 #[derive(Clone)]
 pub enum Output {
@@ -93,9 +321,107 @@ impl<R: std::io::Read, W: FnMut() -> std::io::Result<()>> std::io::Read for Star
     }
 }
 
+#[cfg(windows)]
+fn build_windows_interactive_shell(shell_id: Option<&str>) -> CommandBuilder {
+    match shell_id.unwrap_or("auto") {
+        "pwsh" => {
+            if let Some(pwsh) = find_windows_pwsh() {
+                let mut builder = CommandBuilder::new(pwsh);
+                builder.args([
+                    "-NoLogo",
+                    "-NoExit",
+                    "-Command",
+                    "[Console]::ReadLine() | Out-Null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+                ]);
+                return builder;
+            }
+        }
+        "powershell" => {
+            if let Some(ps) = find_windows_powershell() {
+                let mut builder = CommandBuilder::new(ps);
+                builder.args([
+                    "-NoLogo",
+                    "-NoExit",
+                    "-Command",
+                    "[Console]::ReadLine() | Out-Null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+                ]);
+                return builder;
+            }
+        }
+        "git-bash" => {
+            if let Some(bash) = find_windows_git_bash() {
+                let mut builder = CommandBuilder::new("cmd.exe");
+                builder.args([
+                    "/d",
+                    "/q",
+                    "/s",
+                    "/c",
+                    &format!(
+                        "set /p __FLASHRUN_START= >nul & \"{}\" -i -l",
+                        bash.to_string_lossy()
+                    ),
+                ]);
+                return builder;
+            }
+        }
+        "wsl" => {
+            if let Some(wsl) = find_windows_wsl() {
+                let mut builder = CommandBuilder::new("cmd.exe");
+                builder.args([
+                    "/d",
+                    "/q",
+                    "/s",
+                    "/c",
+                    &format!(
+                        "set /p __FLASHRUN_START= >nul & \"{}\"",
+                        wsl.to_string_lossy()
+                    ),
+                ]);
+                return builder;
+            }
+        }
+        _ => {}
+    }
+
+    let mut builder = CommandBuilder::new("cmd.exe");
+    builder.args([
+        "/d",
+        "/q",
+        "/s",
+        "/k",
+        "set /p __FLASHRUN_START= >nul & chcp 65001>nul",
+    ]);
+    builder
+}
+
+#[cfg(unix)]
+fn resolve_unix_interactive_shell(shell_id: Option<&str>) -> String {
+    match shell_id.unwrap_or("auto") {
+        "zsh" | "bash" | "fish" | "sh" => {
+            let name = shell_id.unwrap_or("sh");
+            if let Some(path) = find_unix_shell(name) {
+                return path.to_string_lossy().into_owned();
+            }
+        }
+        _ => {}
+    }
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+}
+
+#[cfg(test)]
 fn open_session(
     path: String,
     command: Option<String>,
+    rows: u16,
+    cols: u16,
+) -> Result<(Session, Box<dyn std::io::Read + Send>), String> {
+    open_session_with_shell(path, command, None, rows, cols)
+}
+
+fn open_session_with_shell(
+    path: String,
+    command: Option<String>,
+    shell_id: Option<String>,
     rows: u16,
     cols: u16,
 ) -> Result<(Session, Box<dyn std::io::Read + Send>), String> {
@@ -127,10 +453,7 @@ exit $child.ExitCode"#;
                     .collect::<Vec<_>>(),
             );
             let mut builder = CommandBuilder::new(
-                std::path::PathBuf::from(
-                    std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()),
-                )
-                .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+                windows_system_root().join("System32/WindowsPowerShell/v1.0/powershell.exe"),
             );
             builder.args([
                 "-NoLogo",
@@ -142,15 +465,7 @@ exit $child.ExitCode"#;
             builder.env("__FLASHRUN_COMMAND", command);
             builder
         } else {
-            let mut builder = CommandBuilder::new("cmd.exe");
-            builder.args([
-                "/d",
-                "/q",
-                "/s",
-                "/k",
-                "set /p __FLASHRUN_START= >nul & chcp 65001>nul",
-            ]);
-            builder
+            build_windows_interactive_shell(shell_id.as_deref())
         };
         builder.env("PYTHONUTF8", "1");
         builder.env("PYTHONIOENCODING", "utf-8");
@@ -161,13 +476,16 @@ exit $child.ExitCode"#;
         let shell = if command.is_some() {
             "/bin/sh".to_string()
         } else {
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+            resolve_unix_interactive_shell(shell_id.as_deref())
         };
         let mut builder = CommandBuilder::new(shell);
         if let Some(cmd) = command {
             builder.args(["-c", &cmd]);
         } else {
-            builder.arg("-i");
+            builder.args(["-l", "-i"]);
+        }
+        if let Some(login_path) = unix_login_path() {
+            builder.env("PATH", login_path);
         }
         builder
     };
@@ -244,6 +562,7 @@ impl ProcessManager {
         app: tauri::AppHandle,
         path: String,
         command: Option<String>,
+        shell_id: Option<String>,
         output: Output,
         rows: u16,
         cols: u16,
@@ -252,7 +571,7 @@ impl ProcessManager {
         if registry.closing {
             return Err("应用正在退出，不能创建新会话。".into());
         }
-        let (session, reader) = open_session(path, command, rows, cols)?;
+        let (session, reader) = open_session_with_shell(path, command, shell_id, rows, cols)?;
         // IPC exposes an opaque handle, not an OS PID.
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let session = Arc::new(session);
@@ -923,5 +1242,17 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
+    }
+
+    #[test]
+    fn lists_available_shells_with_auto_default() {
+        let shells = list_available_shells();
+        assert!(shells
+            .iter()
+            .any(|shell| shell.id == "auto" && shell.available));
+        #[cfg(windows)]
+        assert!(shells
+            .iter()
+            .any(|shell| shell.id == "cmd" && shell.available));
     }
 }

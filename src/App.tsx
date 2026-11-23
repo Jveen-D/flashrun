@@ -1,5 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { LogicalSize } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { FolderKanban } from 'lucide-react';
 
@@ -69,10 +70,13 @@ function App() {
   const setTerminalHeight = useStore((state) => state.setTerminalHeight);
   const toggleTerminal = useStore((state) => state.toggleTerminal);
   const activeCommandByProject = useStore((state) => state.activeCommandByProject);
+  const windowState = useStore((state) => state.windowState);
+  const setWindowState = useStore((state) => state.setWindowState);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isDraggingState, setIsDraggingState] = useState(false);
   const [mountedTerminalProjectIds, setMountedTerminalProjectIds] = useState<string[]>([]);
   const isDragging = useRef(false);
+  const restoredWindowRef = useRef(false);
 
   const { t, i18n } = useTranslation();
   const appWindow = useMemo(() => getCurrentWindow(), []);
@@ -115,6 +119,67 @@ function App() {
 
   // ── Helpers ────────────────────────────────────────────────────
   useEffect(() => { void hydrate(); }, [hydrate]);
+
+  useEffect(() => {
+    if (!hydrated || restoredWindowRef.current) return;
+    restoredWindowRef.current = true;
+    if (!windowState) return;
+
+    void (async () => {
+      try {
+        if (windowState.maximized) {
+          await appWindow.maximize();
+        } else {
+          await appWindow.setSize(new LogicalSize(windowState.width, windowState.height));
+        }
+      } catch (error) {
+        console.warn('Failed to restore window state:', error);
+      }
+    })();
+  }, [appWindow, hydrated, windowState]);
+
+  useEffect(() => {
+    if (!hydrated) return undefined;
+    let timer = 0;
+
+    const persistCurrentWindowState = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void (async () => {
+          try {
+            const maximized = await appWindow.isMaximized();
+            const current = useStore.getState().windowState;
+            if (maximized) {
+              setWindowState({
+                width: current?.width ?? Math.max(860, window.innerWidth),
+                height: current?.height ?? Math.max(560, window.innerHeight),
+                maximized: true,
+              });
+              return;
+            }
+            const [innerSize, scaleFactor] = await Promise.all([
+              appWindow.innerSize(),
+              appWindow.scaleFactor(),
+            ]);
+            const logical = innerSize.toLogical(scaleFactor);
+            setWindowState({
+              width: Math.round(logical.width),
+              height: Math.round(logical.height),
+              maximized: false,
+            });
+          } catch (error) {
+            console.warn('Failed to capture window state:', error);
+          }
+        })();
+      }, 250);
+    };
+
+    window.addEventListener('resize', persistCurrentWindowState);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('resize', persistCurrentWindowState);
+    };
+  }, [appWindow, hydrated, setWindowState]);
 
   useEffect(() => {
     if (!hydrated) return;

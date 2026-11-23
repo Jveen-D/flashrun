@@ -8,7 +8,7 @@ type ShellSession = {
 };
 // Sessions belong to persisted tabs, not React views or layout/StrictMode mounts.
 const sessions = new Map<string, ShellSession>();
-export function ensureShellSession(id: string, workingDir: string, rows: number, cols: number) {
+export function ensureShellSession(id: string, workingDir: string, rows: number, cols: number, shell?: string) {
   const existing = sessions.get(id);
   if (existing) return existing;
   const session: ShellSession = { id, pid: null, closed: false, exited: false, output: new OutputBuffer(), ready: Promise.resolve(), unlisten: [] };
@@ -24,7 +24,13 @@ export function ensureShellSession(id: string, workingDir: string, rows: number,
         session.output.append('\r\n[FlashRun] Shell exited. Open a new terminal to continue.\r\n');
       }));
       if (session.closed) return;
-      const pid = await invoke<number>('create_shell_session', { sessionId: id, workingDir, rows, cols });
+      const pid = await invoke<number>('create_shell_session', {
+        sessionId: id,
+        workingDir,
+        rows,
+        cols,
+        ...(shell && shell !== 'auto' ? { shell } : {}),
+      });
       if (!session.exited) session.pid = pid;
     } catch (error) {
       if (!session.closed) session.output.append(`\r\n[FlashRun] ${String(error)}\r\n`);

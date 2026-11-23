@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { CustomSelect } from './CustomSelect';
@@ -16,6 +17,12 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
+interface ShellOption {
+  id: string;
+  label: string;
+  available: boolean;
+}
+
 type SettingsSection = 'general' | 'editor' | 'shortcut';
 
 const SECTION_IDS: SettingsSection[] = ['general', 'editor', 'shortcut'];
@@ -28,13 +35,30 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
   const [isRecordingShortcut, setIsRecordingShortcut] = useState(false);
   const [recordingMessage, setRecordingMessage] = useState('');
+  const [availableShells, setAvailableShells] = useState<ShellOption[]>([
+    { id: 'auto', label: 'Auto', available: true },
+  ]);
 
   useEffect(() => {
     if (!open) {
       setActiveSection('general');
       setIsRecordingShortcut(false);
       setRecordingMessage('');
+      return;
     }
+
+    let cancelled = false;
+    void invoke<ShellOption[]>('list_available_shells')
+      .then((shells) => {
+        if (!cancelled && Array.isArray(shells) && shells.length > 0) {
+          setAvailableShells(shells);
+        }
+      })
+      .catch((error) => console.warn('Failed to list available shells:', error));
+
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   useEffect(() => {
@@ -149,6 +173,23 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 </div>
               </div>
             </section>
+
+            <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/50 p-5">
+              <h4 className="text-base font-bold text-slate-900 dark:text-white mb-1">{t('默认交互终端 (Shell)')}</h4>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">{t('新建独立终端标签时使用的默认 Shell，仅对后续新开标签生效。')}</p>
+              <CustomSelect
+                value={globalSettings.defaultShell || 'auto'}
+                onChange={(value) => updateGlobalSettings({ defaultShell: value })}
+                options={availableShells
+                  .filter((shell) => shell.available || shell.id === globalSettings.defaultShell)
+                  .map((shell) => ({
+                    value: shell.id,
+                    label: shell.available ? shell.label : `${shell.label} (${t('未检测到')})`,
+                  }))}
+                buttonClassName="flex items-center justify-between w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-3 text-sm text-slate-700 dark:text-slate-200"
+                dropdownClassName="left-0 mt-2"
+              />
+            </section>
           </div>
         );
       case 'editor':
@@ -179,7 +220,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 </div>
                 <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 px-4 py-3">
                   <div className="font-semibold text-slate-800 dark:text-slate-100 mb-1">macOS / Linux</div>
-                  <div>{t('检测顺序：优先使用已暴露到 PATH 的编辑器 CLI 命令。')}</div>
+                  <div>{t('检测顺序：登录 Shell PATH 中的 CLI → macOS /Applications 与 ~/Applications 中的 .app 兜底唤起。')}</div>
                 </div>
                 <div className="rounded-xl border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 px-4 py-3 text-blue-700 dark:text-blue-300">
                   {t('当前默认编辑器：{{editor}}', { editor: EDITOR_LABEL_MAP[globalSettings.defaultEditor] || globalSettings.defaultEditor })}

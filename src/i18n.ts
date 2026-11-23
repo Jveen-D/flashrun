@@ -174,6 +174,10 @@ const resources = {
       '查看终端日志': 'View terminal logs',
       '端口 {{port}} 被占用，点击释放并重启': 'Port {{port}} is in use. Click to free port and restart.',
       '端口 {{port}} 冲突 · 释放并重启': 'Port {{port}} conflict · Free & Restart',
+      '默认交互终端 (Shell)': 'Default Interactive Shell',
+      '新建独立终端标签时使用的默认 Shell，仅对后续新开标签生效。': 'Default shell for newly created interactive terminal tabs (applies to new tabs).',
+      '未检测到': 'Not detected',
+      '检测顺序：登录 Shell PATH 中的 CLI → macOS /Applications 与 ~/Applications 中的 .app 兜底唤起。': 'Detection order: CLI in login shell PATH → macOS /Applications and ~/Applications .app bundles.',
     },
   },
   zh: {
@@ -348,6 +352,10 @@ const resources = {
       '查看终端日志': '查看终端日志',
       '端口 {{port}} 被占用，点击释放并重启': '端口 {{port}} 被占用，点击释放并重启',
       '端口 {{port}} 冲突 · 释放并重启': '端口 {{port}} 冲突 · 释放并重启',
+      '默认交互终端 (Shell)': '默认交互终端 (Shell)',
+      '新建独立终端标签时使用的默认 Shell，仅对后续新开标签生效。': '新建独立终端标签时使用的默认 Shell，仅对后续新开标签生效。',
+      '未检测到': '未检测到',
+      '检测顺序：登录 Shell PATH 中的 CLI → macOS /Applications 与 ~/Applications 中的 .app 兜底唤起。': '检测顺序：登录 Shell PATH 中的 CLI → macOS /Applications 与 ~/Applications 中的 .app 兜底唤起。',
     },
   },
 };

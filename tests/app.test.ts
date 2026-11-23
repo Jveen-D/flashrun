@@ -23,10 +23,12 @@ vi.mock('../src/store', () => {
     isTerminalOpen: false,
     terminalHeight: 340,
     projectTerminals: {},
+    windowState: undefined,
     hydrate: vi.fn(),
     setTerminalOpen: vi.fn(),
     setTerminalHeight: vi.fn(),
     toggleTerminal: vi.fn(),
+    setWindowState: vi.fn(),
   };
   return {
     useStore: (selector?: (s: typeof state) => unknown) => (selector ? selector(state) : state),
