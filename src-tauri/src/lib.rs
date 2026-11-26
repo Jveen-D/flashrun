@@ -304,7 +304,10 @@ fn detect_go_commands(base_path: &Path) -> Option<(&'static str, Vec<DetectedCom
 
     let mut commands = Vec::new();
     let air_configs = [".air.toml", ".air.conf", "air.toml"];
-    if air_configs.iter().any(|name| base_path.join(name).is_file()) {
+    if air_configs
+        .iter()
+        .any(|name| base_path.join(name).is_file())
+    {
         commands.push(DetectedCommand::root("dev", "air"));
     }
 
@@ -538,15 +541,15 @@ fn resolve_python_runner(base_path: &Path, is_windows: bool) -> PythonRunner {
     }
     for venv_dir in [".venv", "venv"] {
         if is_windows {
-            let rel = format!(r"{venv_dir}\Scripts\python.exe");
-            if base_path.join(&rel).is_file() {
-                return PythonRunner::Venv(rel);
+            let scripts_dir = base_path.join(venv_dir).join("Scripts");
+            if scripts_dir.join("python.exe").is_file() {
+                return PythonRunner::Venv(format!(r"{venv_dir}\Scripts\python.exe"));
             }
         } else {
+            let bin_dir = base_path.join(venv_dir).join("bin");
             for bin in ["python", "python3"] {
-                let rel = format!("{venv_dir}/bin/{bin}");
-                if base_path.join(&rel).is_file() {
-                    return PythonRunner::Venv(rel);
+                if bin_dir.join(bin).is_file() {
+                    return PythonRunner::Venv(format!("{venv_dir}/bin/{bin}"));
                 }
             }
         }
@@ -826,7 +829,7 @@ fn parse_project_info_with_platform(path: &Path, is_windows: bool) -> Result<Pro
     };
 
     let fallback_node_mgr = if matches!(manager.as_str(), "npm" | "pnpm" | "yarn" | "bun") {
-        Some(manager.as_str())
+        Some(manager.clone())
     } else {
         None
     };
@@ -837,7 +840,8 @@ fn parse_project_info_with_platform(path: &Path, is_windows: bool) -> Result<Pro
         if !sub_dir.is_dir() {
             continue;
         }
-        if let Some(sub) = inspect_subproject_dir(&sub_dir, fallback_node_mgr, is_windows) {
+        let fb = fallback_node_mgr.as_deref();
+        if let Some(sub) = inspect_subproject_dir(&sub_dir, fb, is_windows) {
             attached_subprojects += 1;
             if manager == "custom" {
                 manager = sub.manager;
