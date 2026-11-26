@@ -33,6 +33,7 @@ export function isJsPackageManager(manager: string): boolean {
 export interface DetectedCommand {
   label: string;
   cmd: string;
+  cwd?: string;
 }
 
 export interface ProjectInfoPayload {
@@ -493,6 +494,35 @@ function resolvePreferredRunningCommandId(commands: Command[], preferredCommandI
   return [...commands].reverse().find((command) => command.status === 'running')?.id ?? null;
 }
 
+const PREFERRED_DEFAULT_LABELS = [
+  'dev',
+  'start:dev',
+  'spring-boot:run',
+  'bootRun',
+  'runserver',
+  'serve',
+  'run',
+  'start',
+] as const;
+
+function pickPreferredDefaultLabel(entries: DetectedCommand[]): string | null {
+  for (const candidate of PREFERRED_DEFAULT_LABELS) {
+    const exact = entries.find((item) => item.label === candidate);
+    if (exact) {
+      return exact.label;
+    }
+  }
+  for (const candidate of PREFERRED_DEFAULT_LABELS) {
+    const suffixed = entries.find(
+      (item) => item.label.endsWith(`:${candidate}`) || (candidate === 'run' && item.label.startsWith('run:')),
+    );
+    if (suffixed) {
+      return suffixed.label;
+    }
+  }
+  return entries[0]?.label ?? null;
+}
+
 function buildDetectedCommands(
   manager: string,
   scripts: Record<string, string>,
@@ -500,10 +530,14 @@ function buildDetectedCommands(
 ): DetectedCommand[] {
   if (Array.isArray(detectedCommands) && detectedCommands.length > 0) {
     return detectedCommands
-      .map((item) => ({
-        label: item.label.trim(),
-        cmd: item.cmd.trim(),
-      }))
+      .map((item) => {
+        const cwd = typeof item.cwd === 'string' && item.cwd.trim() ? item.cwd.trim() : undefined;
+        return {
+          label: item.label.trim(),
+          cmd: item.cmd.trim(),
+          ...(cwd ? { cwd } : {}),
+        };
+      })
       .filter((item) => item.label.length > 0 && item.cmd.length > 0);
   }
 
@@ -519,10 +553,7 @@ function buildInitialCommands(
   detectedCommands?: DetectedCommand[],
 ): Command[] {
   const entries = buildDetectedCommands(manager, scripts, detectedCommands);
-  const defaultLabel = entries.find((item) => item.label === 'dev')?.label
-    ?? entries.find((item) => item.label === 'run')?.label
-    ?? entries[0]?.label
-    ?? null;
+  const defaultLabel = pickPreferredDefaultLabel(entries);
 
   return entries.map((item) => ({
     id: nanoid(),
@@ -531,6 +562,7 @@ function buildInitialCommands(
     status: 'idle' as const,
     pid: null,
     isDefault: item.label === defaultLabel,
+    ...(item.cwd ? { cwd: item.cwd } : {}),
   }));
 }
 
@@ -878,16 +910,22 @@ export const useStore = create<StoreState>((set) => ({
       }
 
       const effectiveManager = isJsPackageManager(target.manager) ? target.manager : manager;
-      const incoming = isJsPackageManager(effectiveManager) && Object.keys(scripts).length > 0
+      const scriptEntries: DetectedCommand[] = isJsPackageManager(effectiveManager) && Object.keys(scripts).length > 0
         ? Object.keys(scripts).map((key) => ({ label: key, cmd: `${effectiveManager} run ${key}` }))
-        : buildDetectedCommands(effectiveManager, scripts, detectedCommands);
+        : [];
+      const extraDetected = buildDetectedCommands(effectiveManager, scripts, detectedCommands);
+      const incoming = scriptEntries.length > 0
+        ? [...scriptEntries, ...extraDetected.filter((item) => Boolean(item.cwd))]
+        : extraDetected;
 
-      const existingLabels = new Set(target.commands.map((command) => command.label.toLowerCase()));
+      const existingKeys = new Set(
+        target.commands.map((command) => `${command.cwd ?? ''}::${command.label.toLowerCase()}`),
+      );
       const newCommands: Command[] = [];
       for (const item of incoming) {
-        const key = item.label.toLowerCase();
-        if (!existingLabels.has(key)) {
-          existingLabels.add(key);
+        const key = `${item.cwd ?? ''}::${item.label.toLowerCase()}`;
+        if (!existingKeys.has(key)) {
+          existingKeys.add(key);
           newCommands.push({
             id: nanoid(),
             label: item.label,
@@ -895,6 +933,7 @@ export const useStore = create<StoreState>((set) => ({
             status: 'idle',
             pid: null,
             isDefault: false,
+            ...(item.cwd ? { cwd: item.cwd } : {}),
           });
         }
       }

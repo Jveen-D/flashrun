@@ -438,10 +438,20 @@ export const ActionGrid: React.FC = () => {
   };
 
   const handleImportWorkspaceCommands = (items: Array<{ label: string; cmd: string; cwd: string }>) => {
+    const existingKeys = new Set(
+      activeProject.commands.map((cmd) => `${cmd.cwd ?? ''}::${cmd.cmd}`),
+    );
+    let addedCount = 0;
     for (const item of items) {
+      const key = `${item.cwd}::${item.cmd}`;
+      if (existingKeys.has(key)) {
+        continue;
+      }
+      existingKeys.add(key);
       addCommand(activeProject.id, item.label, item.cmd, { cwd: item.cwd });
+      addedCount += 1;
     }
-    toast.success(t('已从 Monorepo 子包导入 {{count}} 条命令。', { count: items.length }));
+    toast.success(t('已从 Monorepo 子包导入 {{count}} 条命令。', { count: addedCount }));
   };
 
   return (

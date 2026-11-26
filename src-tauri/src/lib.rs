@@ -63,10 +63,34 @@ fn migrate_legacy_config_if_needed(target_path: &Path) -> Result<(), String> {
     config::migrate(&legacy_path, target_path)
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct DetectedCommand {
     label: String,
     cmd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
+}
+
+impl DetectedCommand {
+    fn root(label: impl Into<String>, cmd: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            cmd: cmd.into(),
+            cwd: None,
+        }
+    }
+
+    fn with_cwd(
+        label: impl Into<String>,
+        cmd: impl Into<String>,
+        cwd: impl Into<String>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            cmd: cmd.into(),
+            cwd: Some(cwd.into()),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -210,86 +234,485 @@ fn parse_makefile_targets(content: &str) -> Vec<DetectedCommand> {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
             && seen.insert(target.to_string())
         {
-            commands.push(DetectedCommand {
-                label: target.to_string(),
-                cmd: format!("make {target}"),
-            });
+            commands.push(DetectedCommand::root(target, format!("make {target}")));
         }
     }
 
     commands
 }
 
-fn detected_commands_for_non_node(base_path: &Path) -> (&'static str, Vec<DetectedCommand>) {
-    if base_path.join("Cargo.toml").exists() {
+const FULLSTACK_AUTO_SUBDIRS: &[&str] = &["frontend", "web", "client", "backend", "server", "api"];
+const SUBPROJECT_GROUP_DIRS: &[&str] = &["apps", "services", "packages", "modules"];
+const IGNORED_SCAN_DIRS: &[&str] = &[
+    ".git",
+    ".github",
+    ".vscode",
+    ".idea",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "vendor",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    "coverage",
+    "docs",
+    "public",
+    "scripts",
+    "test",
+    "tests",
+    "src",
+];
+
+fn has_go_source_files(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let path = entry.path();
+            path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("go")
+        })
+}
+
+fn detect_go_cmd_entrypoints(base_path: &Path) -> Vec<String> {
+    let cmd_root = base_path.join("cmd");
+    let Ok(entries) = fs::read_dir(&cmd_root) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() || !has_go_source_files(&path) {
+                return None;
+            }
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map(ToString::to_string)
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+fn detect_go_commands(base_path: &Path) -> Option<(&'static str, Vec<DetectedCommand>)> {
+    if !base_path.join("go.mod").is_file() {
+        return None;
+    }
+
+    let mut commands = Vec::new();
+    if [".air.toml", ".air.conf", "air.toml"]
+        .iter()
+        .any(|name| base_path.join(name).is_file())
+    {
+        commands.push(DetectedCommand::root("dev", "air"));
+    }
+
+    let has_root_go = has_go_source_files(base_path);
+    let cmd_entrypoints = detect_go_cmd_entrypoints(base_path);
+
+    if has_root_go {
+        commands.push(DetectedCommand::root("run", "go run ."));
+        for sub in cmd_entrypoints {
+            commands.push(DetectedCommand::root(
+                format!("run:{sub}"),
+                format!("go run ./cmd/{sub}"),
+            ));
+        }
+    } else if cmd_entrypoints.len() == 1 {
+        let sub = &cmd_entrypoints[0];
+        commands.push(DetectedCommand::root("run", format!("go run ./cmd/{sub}")));
+    } else if cmd_entrypoints.len() > 1 {
+        for sub in cmd_entrypoints {
+            commands.push(DetectedCommand::root(
+                format!("run:{sub}"),
+                format!("go run ./cmd/{sub}"),
+            ));
+        }
+    } else {
+        commands.push(DetectedCommand::root("run", "go run ."));
+    }
+
+    commands.push(DetectedCommand::root("build", "go build ./..."));
+    commands.push(DetectedCommand::root("test", "go test ./..."));
+    Some(("go", commands))
+}
+
+fn detect_java_commands(
+    base_path: &Path,
+    is_windows: bool,
+) -> Option<(&'static str, Vec<DetectedCommand>)> {
+    let pom_path = base_path.join("pom.xml");
+    if pom_path.is_file() {
+        let mvn = if is_windows {
+            if base_path.join("mvnw.cmd").is_file() {
+                r".\mvnw.cmd"
+            } else {
+                "mvn"
+            }
+        } else if base_path.join("mvnw").is_file() {
+            "./mvnw"
+        } else {
+            "mvn"
+        };
+
+        let pom_lower = fs::read_to_string(&pom_path)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let is_pom_aggregator = pom_lower.contains("<packaging>pom</packaging>");
+        let mut commands = Vec::new();
+
+        if pom_lower.contains("spring-boot")
+            && (!is_pom_aggregator || pom_lower.contains("spring-boot-maven-plugin"))
+        {
+            commands.push(DetectedCommand::root(
+                "spring-boot:run",
+                format!("{mvn} spring-boot:run"),
+            ));
+        } else if !is_pom_aggregator
+            && (pom_lower.contains("exec-maven-plugin") || pom_lower.contains("<mainclass>"))
+        {
+            commands.push(DetectedCommand::root(
+                "run",
+                format!("{mvn} compile exec:java"),
+            ));
+        }
+
+        commands.push(DetectedCommand::root(
+            "package",
+            format!("{mvn} package -DskipTests"),
+        ));
+        commands.push(DetectedCommand::root("test", format!("{mvn} test")));
+        return Some(("maven", commands));
+    }
+
+    let gradle_files = ["build.gradle.kts", "build.gradle"];
+    if gradle_files
+        .iter()
+        .any(|name| base_path.join(name).is_file())
+    {
+        let gradle = if is_windows {
+            if base_path.join("gradlew.bat").is_file() {
+                r".\gradlew.bat"
+            } else {
+                "gradle"
+            }
+        } else if base_path.join("gradlew").is_file() {
+            "./gradlew"
+        } else {
+            "gradle"
+        };
+
+        let gradle_lower = gradle_files
+            .iter()
+            .filter_map(|name| fs::read_to_string(base_path.join(name)).ok())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase();
+
+        let mut commands = Vec::new();
+        if gradle_lower.contains("org.springframework.boot") || gradle_lower.contains("bootrun") {
+            commands.push(DetectedCommand::root("bootRun", format!("{gradle} bootRun")));
+        } else if gradle_lower.contains("id(\"application\")")
+            || gradle_lower.contains("id 'application'")
+            || gradle_lower.contains("apply plugin: 'application'")
+            || gradle_lower.contains("mainclass")
+        {
+            commands.push(DetectedCommand::root("run", format!("{gradle} run")));
+        }
+
+        commands.push(DetectedCommand::root("build", format!("{gradle} build -x test")));
+        commands.push(DetectedCommand::root("test", format!("{gradle} test")));
+        return Some(("gradle", commands));
+    }
+
+    None
+}
+
+fn detect_standalone_jar_commands(
+    base_path: &Path,
+) -> Option<(&'static str, Vec<DetectedCommand>)> {
+    let entries = fs::read_dir(base_path).ok()?;
+    let mut jars: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?.to_string();
+            let lower = name.to_ascii_lowercase();
+            if lower.ends_with(".jar")
+                && !lower.ends_with("-sources.jar")
+                && !lower.ends_with("-javadoc.jar")
+                && !lower.ends_with("-plain.jar")
+            {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+    jars.sort();
+    let first = jars.into_iter().next()?;
+    Some((
+        "java",
+        vec![DetectedCommand::root("run", format!("java -jar \"{first}\""))],
+    ))
+}
+
+enum PythonRunner {
+    Uv,
+    Poetry,
+    Pipenv,
+    Venv(String),
+    Conda(String),
+    System,
+}
+
+impl PythonRunner {
+    fn manager(&self) -> &'static str {
+        match self {
+            Self::Uv => "uv",
+            Self::Poetry => "poetry",
+            Self::Pipenv => "pipenv",
+            Self::Venv(_) => "venv",
+            Self::Conda(_) => "conda",
+            Self::System => "python",
+        }
+    }
+
+    fn python_cmd(&self, args: &str) -> String {
+        match self {
+            Self::Uv => format!("uv run python {args}"),
+            Self::Poetry => format!("poetry run python {args}"),
+            Self::Pipenv => format!("pipenv run python {args}"),
+            Self::Venv(py) => format!("{py} {args}"),
+            Self::Conda(env) => format!("conda run --no-capture-output -n {env} python {args}"),
+            Self::System => format!("python {args}"),
+        }
+    }
+
+    fn module_cmd(&self, module_args: &str) -> String {
+        match self {
+            Self::Uv => format!("uv run {module_args}"),
+            Self::Poetry => format!("poetry run {module_args}"),
+            Self::Pipenv => format!("pipenv run {module_args}"),
+            Self::Venv(py) => format!("{py} -m {module_args}"),
+            Self::Conda(env) => {
+                format!("conda run --no-capture-output -n {env} python -m {module_args}")
+            }
+            Self::System => format!("python -m {module_args}"),
+        }
+    }
+
+    fn test_cmd(&self) -> String {
+        match self {
+            Self::Uv => "uv run pytest".into(),
+            Self::Poetry => "poetry run pytest".into(),
+            Self::Pipenv => "pipenv run pytest".into(),
+            Self::Venv(py) => format!("{py} -m pytest"),
+            Self::Conda(env) => format!("conda run --no-capture-output -n {env} pytest"),
+            Self::System => "pytest".into(),
+        }
+    }
+}
+
+fn parse_conda_env_name(base_path: &Path) -> Option<String> {
+    for name in ["environment.yml", "environment.yaml"] {
+        let Ok(content) = fs::read_to_string(base_path.join(name)) else {
+            continue;
+        };
+        for raw_line in content.lines() {
+            let trimmed = raw_line.trim();
+            if let Some(rest) = trimmed.strip_prefix("name:") {
+                let env_name = rest
+                    .split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'');
+                if !env_name.is_empty() {
+                    return Some(env_name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn resolve_python_runner(base_path: &Path, is_windows: bool) -> PythonRunner {
+    if base_path.join("uv.lock").is_file() {
+        return PythonRunner::Uv;
+    }
+    if base_path.join("poetry.lock").is_file() {
+        return PythonRunner::Poetry;
+    }
+    if base_path.join("Pipfile").is_file() {
+        return PythonRunner::Pipenv;
+    }
+    for venv_dir in [".venv", "venv"] {
+        if is_windows {
+            let rel = format!(r"{venv_dir}\Scripts\python.exe");
+            if base_path.join(&rel).is_file() {
+                return PythonRunner::Venv(rel);
+            }
+        } else {
+            for bin in ["python", "python3"] {
+                let rel = format!("{venv_dir}/bin/{bin}");
+                if base_path.join(&rel).is_file() {
+                    return PythonRunner::Venv(rel);
+                }
+            }
+        }
+    }
+    if let Some(conda_env) = parse_conda_env_name(base_path) {
+        return PythonRunner::Conda(conda_env);
+    }
+    PythonRunner::System
+}
+
+fn detect_asgi_target(base_path: &Path) -> (String, bool) {
+    let candidates = [
+        ("main.py", "main"),
+        ("app/main.py", "app.main"),
+        ("src/main.py", "src.main"),
+        ("app.py", "app"),
+        ("server.py", "server"),
+        ("asgi.py", "asgi"),
+    ];
+    for (rel_file, module_name) in candidates {
+        let path = base_path.join(rel_file);
+        if path.is_file() {
+            let content = fs::read_to_string(&path).unwrap_or_default();
+            let has_fastapi = content.contains("FastAPI(");
+            let attr = if !content.contains("app =")
+                && !content.contains("app:")
+                && content.contains("application =")
+            {
+                "application"
+            } else {
+                "app"
+            };
+            return (format!("{module_name}:{attr}"), has_fastapi);
+        }
+    }
+    ("main:app".into(), false)
+}
+
+fn detect_flask_target(base_path: &Path) -> (String, bool) {
+    let candidates = [
+        ("app.py", "app"),
+        ("main.py", "main"),
+        ("run.py", "run"),
+        ("wsgi.py", "wsgi"),
+        ("app/__init__.py", "app"),
+    ];
+    for (rel_file, target_name) in candidates {
+        let path = base_path.join(rel_file);
+        if path.is_file() {
+            let content = fs::read_to_string(&path).unwrap_or_default();
+            return (target_name.into(), content.contains("Flask("));
+        }
+    }
+    ("app".into(), false)
+}
+
+fn detect_python_commands(
+    base_path: &Path,
+    is_windows: bool,
+) -> Option<(&'static str, Vec<DetectedCommand>)> {
+    let marker_files = [
+        "pyproject.toml",
+        "requirements.txt",
+        "Pipfile",
+        "environment.yml",
+        "environment.yaml",
+    ];
+    let has_marker = marker_files
+        .iter()
+        .any(|name| base_path.join(name).is_file())
+        || base_path.join("manage.py").is_file();
+    if !has_marker {
+        return None;
+    }
+
+    let runner = resolve_python_runner(base_path, is_windows);
+    let deps_lower = marker_files
+        .iter()
+        .filter_map(|name| fs::read_to_string(base_path.join(name)).ok())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+
+    let mut commands = Vec::new();
+    if base_path.join("manage.py").is_file() {
+        commands.push(DetectedCommand::root(
+            "runserver",
+            runner.python_cmd("manage.py runserver"),
+        ));
+    }
+
+    let (asgi_target, file_has_fastapi) = detect_asgi_target(base_path);
+    let (flask_target, file_has_flask) = detect_flask_target(base_path);
+
+    if deps_lower.contains("fastapi") || deps_lower.contains("uvicorn") || file_has_fastapi {
+        commands.push(DetectedCommand::root(
+            "dev",
+            runner.module_cmd(&format!("uvicorn {asgi_target} --reload")),
+        ));
+    } else if deps_lower.contains("flask") || file_has_flask {
+        commands.push(DetectedCommand::root(
+            "dev",
+            runner.module_cmd(&format!("flask --app {flask_target} run --debug")),
+        ));
+    } else if commands.is_empty() {
+        for script in ["main.py", "app.py", "run.py", "server.py"] {
+            if base_path.join(script).is_file() {
+                commands.push(DetectedCommand::root("run", runner.python_cmd(script)));
+                break;
+            }
+        }
+    }
+
+    commands.push(DetectedCommand::root("test", runner.test_cmd()));
+    Some((runner.manager(), commands))
+}
+
+fn detected_commands_for_non_node_with_platform(
+    base_path: &Path,
+    is_windows: bool,
+) -> (&'static str, Vec<DetectedCommand>) {
+    if base_path.join("Cargo.toml").is_file() {
         return (
             "cargo",
             vec![
-                DetectedCommand {
-                    label: "run".into(),
-                    cmd: "cargo run".into(),
-                },
-                DetectedCommand {
-                    label: "build".into(),
-                    cmd: "cargo build".into(),
-                },
-                DetectedCommand {
-                    label: "test".into(),
-                    cmd: "cargo test".into(),
-                },
-                DetectedCommand {
-                    label: "check".into(),
-                    cmd: "cargo check".into(),
-                },
+                DetectedCommand::root("run", "cargo run"),
+                DetectedCommand::root("build", "cargo build"),
+                DetectedCommand::root("test", "cargo test"),
+                DetectedCommand::root("check", "cargo check"),
             ],
         );
     }
 
-    if base_path.join("go.mod").exists() {
-        return (
-            "go",
-            vec![
-                DetectedCommand {
-                    label: "run".into(),
-                    cmd: "go run .".into(),
-                },
-                DetectedCommand {
-                    label: "build".into(),
-                    cmd: "go build ./...".into(),
-                },
-                DetectedCommand {
-                    label: "test".into(),
-                    cmd: "go test ./...".into(),
-                },
-            ],
-        );
+    if let Some(go_detected) = detect_go_commands(base_path) {
+        return go_detected;
     }
 
-    if base_path.join("pyproject.toml").exists() || base_path.join("requirements.txt").exists() {
-        let (manager, test_cmd) = if base_path.join("uv.lock").exists() {
-            ("uv", "uv run pytest")
-        } else if base_path.join("poetry.lock").exists() {
-            ("poetry", "poetry run pytest")
-        } else {
-            ("python", "pytest")
-        };
+    if let Some(java_detected) = detect_java_commands(base_path, is_windows) {
+        return java_detected;
+    }
 
-        let mut commands = Vec::new();
-        if base_path.join("manage.py").exists() {
-            commands.push(DetectedCommand {
-                label: "runserver".into(),
-                cmd: match manager {
-                    "uv" => "uv run python manage.py runserver".into(),
-                    "poetry" => "poetry run python manage.py runserver".into(),
-                    _ => "python manage.py runserver".into(),
-                },
-            });
-        }
-        commands.push(DetectedCommand {
-            label: "test".into(),
-            cmd: test_cmd.into(),
-        });
-        return (manager, commands);
+    if let Some(python_detected) = detect_python_commands(base_path, is_windows) {
+        return python_detected;
     }
 
     for makefile_name in ["Makefile", "makefile"] {
@@ -309,73 +732,166 @@ fn detected_commands_for_non_node(base_path: &Path) -> (&'static str, Vec<Detect
         "compose.yaml",
     ]
     .iter()
-    .any(|name| base_path.join(name).exists());
+    .any(|name| base_path.join(name).is_file());
 
     if has_compose {
         return (
             "docker",
             vec![
-                DetectedCommand {
-                    label: "up".into(),
-                    cmd: "docker compose up".into(),
-                },
-                DetectedCommand {
-                    label: "up-d".into(),
-                    cmd: "docker compose up -d".into(),
-                },
-                DetectedCommand {
-                    label: "down".into(),
-                    cmd: "docker compose down".into(),
-                },
-                DetectedCommand {
-                    label: "logs".into(),
-                    cmd: "docker compose logs -f".into(),
-                },
+                DetectedCommand::root("up", "docker compose up"),
+                DetectedCommand::root("up-d", "docker compose up -d"),
+                DetectedCommand::root("down", "docker compose down"),
+                DetectedCommand::root("logs", "docker compose logs -f"),
             ],
         );
+    }
+
+    if let Some(jar_detected) = detect_standalone_jar_commands(base_path) {
+        return jar_detected;
     }
 
     ("custom", Vec::new())
 }
 
-#[tauri::command]
-fn parse_project_info(path: String) -> Result<ProjectInfo, String> {
-    let base_path = Path::new(&path);
-    if !base_path.is_dir() {
+struct InspectedSubproject {
+    manager: String,
+    name: Option<String>,
+    scripts: IndexMap<String, String>,
+    commands: Vec<DetectedCommand>,
+}
+
+fn inspect_subproject_dir(
+    sub_dir: &Path,
+    fallback_node_manager: Option<&str>,
+    is_windows: bool,
+) -> Option<InspectedSubproject> {
+    let pkg_json_path = sub_dir.join("package.json");
+    if pkg_json_path.is_file() {
+        let content = fs::read_to_string(&pkg_json_path).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let scripts: IndexMap<String, String> = json
+            .get("scripts")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        if scripts.is_empty() {
+            return None;
+        }
+        let pkg_mgr_field = json.get("packageManager").and_then(|v| v.as_str());
+        let lockfiles = [
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "bun.lock",
+            "bun.lockb",
+            "package-lock.json",
+        ];
+        let has_local_lock = lockfiles.iter().any(|lock| sub_dir.join(lock).is_file());
+        let manager = if has_local_lock || pkg_mgr_field.is_some() {
+            detect_node_manager(sub_dir, pkg_mgr_field).to_string()
+        } else {
+            fallback_node_manager
+                .map(ToString::to_string)
+                .unwrap_or_else(|| detect_node_manager(sub_dir, None).to_string())
+        };
+        let name = json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let commands = scripts
+            .keys()
+            .map(|key| DetectedCommand::root(key.clone(), format!("{manager} run {key}")))
+            .collect();
+        return Some(InspectedSubproject {
+            manager,
+            name,
+            scripts,
+            commands,
+        });
+    }
+
+    let (manager, commands) = detected_commands_for_non_node_with_platform(sub_dir, is_windows);
+    if manager == "custom" || commands.is_empty() {
+        return None;
+    }
+    let scripts = commands
+        .iter()
+        .map(|item| (item.label.clone(), item.cmd.clone()))
+        .collect();
+    Some(InspectedSubproject {
+        manager: manager.to_string(),
+        name: None,
+        scripts,
+        commands,
+    })
+}
+
+fn parse_project_info_with_platform(path: &Path, is_windows: bool) -> Result<ProjectInfo, String> {
+    if !path.is_dir() {
         return Err("目录不存在或无法访问。".to_string());
     }
 
-    let pkg_json_path = base_path.join("package.json");
-    if pkg_json_path.is_file() {
+    let pkg_json_path = path.join("package.json");
+    let (mut manager, scripts, mut commands) = if pkg_json_path.is_file() {
         let content = fs::read_to_string(&pkg_json_path)
             .map_err(|e| format!("读取 package.json 失败: {}", e))?;
 
         let parsed: PackageJson =
             serde_json::from_str(&content).map_err(|e| format!("解析 package.json 失败: {}", e))?;
 
-        let manager = detect_node_manager(base_path, parsed.package_manager.as_deref());
+        let detected_mgr = detect_node_manager(path, parsed.package_manager.as_deref());
         let scripts = parsed.scripts.unwrap_or_default();
         let commands = scripts
             .keys()
-            .map(|key| DetectedCommand {
-                label: key.clone(),
-                cmd: format!("{manager} run {key}"),
-            })
+            .map(|key| DetectedCommand::root(key.clone(), format!("{detected_mgr} run {key}")))
             .collect();
+        (detected_mgr.to_string(), scripts, commands)
+    } else {
+        let (detected_mgr, commands) =
+            detected_commands_for_non_node_with_platform(path, is_windows);
+        (detected_mgr.to_string(), IndexMap::new(), commands)
+    };
 
-        return Ok(ProjectInfo {
-            manager: manager.to_string(),
-            scripts,
-            commands,
-        });
+    let fallback_node_mgr = if matches!(manager.as_str(), "npm" | "pnpm" | "yarn" | "bun") {
+        Some(manager.as_str())
+    } else {
+        None
+    };
+
+    let mut attached_subprojects = 0usize;
+    for sub_name in FULLSTACK_AUTO_SUBDIRS {
+        let sub_dir = path.join(sub_name);
+        if !sub_dir.is_dir() {
+            continue;
+        }
+        if let Some(sub) = inspect_subproject_dir(&sub_dir, fallback_node_mgr, is_windows) {
+            attached_subprojects += 1;
+            if manager == "custom" {
+                manager = sub.manager;
+            }
+            for cmd in sub.commands {
+                commands.push(DetectedCommand::with_cwd(
+                    format!("{sub_name}:{}", cmd.label),
+                    cmd.cmd,
+                    *sub_name,
+                ));
+            }
+        }
+    }
+    if attached_subprojects > 1 && scripts.is_empty() {
+        manager = "fullstack".to_string();
     }
 
-    let (manager, commands) = detected_commands_for_non_node(base_path);
     Ok(ProjectInfo {
-        manager: manager.to_string(),
-        scripts: IndexMap::new(),
+        manager,
+        scripts,
         commands,
     })
+}
+
+#[tauri::command]
+fn parse_project_info(path: String) -> Result<ProjectInfo, String> {
+    parse_project_info_with_platform(Path::new(&path), cfg!(windows))
 }
 
 #[tauri::command]
@@ -409,6 +925,7 @@ struct WorkspacePackage {
     relative_path: String,
     manager: String,
     scripts: IndexMap<String, String>,
+    commands: Vec<DetectedCommand>,
 }
 
 fn parse_dotenv(content: &str) -> IndexMap<String, String> {
@@ -588,6 +1105,78 @@ fn expand_workspace_pattern(root: &Path, pattern: &str) -> Vec<PathBuf> {
     Vec::new()
 }
 
+fn parse_maven_modules(root: &Path) -> Vec<PathBuf> {
+    let Ok(content) = fs::read_to_string(root.join("pom.xml")) else {
+        return Vec::new();
+    };
+    let mut modules = Vec::new();
+    let mut rest = content.as_str();
+    while let Some(start) = rest.find("<module>") {
+        let after = &rest[start + "<module>".len()..];
+        let Some(end) = after.find("</module>") else {
+            break;
+        };
+        let raw_mod = after[..end].trim().trim_matches('/');
+        if !raw_mod.is_empty() && !raw_mod.contains("..") {
+            let dir = root.join(raw_mod);
+            if dir.is_dir() {
+                modules.push(dir);
+            }
+        }
+        rest = &after[end + "</module>".len()..];
+    }
+    modules
+}
+
+fn collect_candidate_subproject_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let Ok(entries) = fs::read_dir(root) else {
+        return dirs;
+    };
+    let mut child_dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    child_dirs.sort();
+
+    for dir in child_dirs {
+        let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.')
+            || IGNORED_SCAN_DIRS
+                .iter()
+                .any(|ignored| ignored.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        if SUBPROJECT_GROUP_DIRS
+            .iter()
+            .any(|group| group.eq_ignore_ascii_case(name))
+        {
+            if let Ok(nested) = fs::read_dir(&dir) {
+                let mut nested_dirs: Vec<PathBuf> = nested
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|p| {
+                        p.is_dir()
+                            && p.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| !n.starts_with('.'))
+                                .unwrap_or(false)
+                    })
+                    .collect();
+                nested_dirs.sort();
+                dirs.extend(nested_dirs);
+            }
+        } else {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
 #[tauri::command]
 fn detect_workspace_packages(path: String) -> Result<Vec<WorkspacePackage>, String> {
     let root = Path::new(&path);
@@ -606,46 +1195,49 @@ fn detect_workspace_packages(path: String) -> Result<Vec<WorkspacePackage>, Stri
         patterns.extend(parse_package_json_workspace_patterns(root));
     }
 
-    let root_manager = detect_node_manager(root, None).to_string();
+    let has_root_js_manifest = root.join("package.json").is_file()
+        || ["pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"]
+            .iter()
+            .any(|lock| root.join(lock).is_file());
+    let root_manager = has_root_js_manifest.then(|| detect_node_manager(root, None).to_string());
+
+    let mut candidate_dirs = Vec::new();
+    for pattern in patterns {
+        candidate_dirs.extend(expand_workspace_pattern(root, &pattern));
+    }
+    candidate_dirs.extend(parse_maven_modules(root));
+    candidate_dirs.extend(collect_candidate_subproject_dirs(root));
+
+    let is_win = cfg!(windows);
     let mut seen = std::collections::HashSet::new();
     let mut packages = Vec::new();
 
-    for pattern in patterns {
-        for pkg_dir in expand_workspace_pattern(root, &pattern) {
-            let Ok(rel) = pkg_dir.strip_prefix(root) else {
-                continue;
-            };
-            let relative_path = rel.to_string_lossy().replace('\\', "/");
-            if !seen.insert(relative_path.clone()) {
-                continue;
-            }
-            let Ok(content) = fs::read_to_string(pkg_dir.join("package.json")) else {
-                continue;
-            };
-            let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-                continue;
-            };
-            let scripts: IndexMap<String, String> = json
-                .get("scripts")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default();
-            if scripts.is_empty() {
-                continue;
-            }
-            let name = json
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToString::to_string)
-                .unwrap_or_else(|| relative_path.clone());
-            packages.push(WorkspacePackage {
-                name,
-                relative_path,
-                manager: root_manager.clone(),
-                scripts,
-            });
+    for pkg_dir in candidate_dirs {
+        let Ok(rel) = pkg_dir.strip_prefix(root) else {
+            continue;
+        };
+        let relative_path = rel.to_string_lossy().replace('\\', "/");
+        if relative_path.is_empty() || !seen.insert(relative_path.clone()) {
+            continue;
         }
+
+        let Some(sub) = inspect_subproject_dir(&pkg_dir, root_manager.as_deref(), is_win) else {
+            continue;
+        };
+
+        let default_name = pkg_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| relative_path.clone());
+
+        packages.push(WorkspacePackage {
+            name: sub.name.unwrap_or(default_name),
+            relative_path,
+            manager: sub.manager,
+            scripts: sub.scripts,
+            commands: sub.commands,
+        });
     }
 
     Ok(packages)
@@ -1263,14 +1855,8 @@ mod tests {
         assert_eq!(
             info.commands,
             vec![
-                DetectedCommand {
-                    label: "dev".into(),
-                    cmd: "bun run dev".into()
-                },
-                DetectedCommand {
-                    label: "build".into(),
-                    cmd: "bun run build".into()
-                },
+                DetectedCommand::root("dev", "bun run dev"),
+                DetectedCommand::root("build", "bun run build"),
             ]
         );
 
@@ -1314,14 +1900,8 @@ mod tests {
         assert_eq!(
             make_info.commands,
             vec![
-                DetectedCommand {
-                    label: "dev".into(),
-                    cmd: "make dev".into()
-                },
-                DetectedCommand {
-                    label: "build".into(),
-                    cmd: "make build".into()
-                },
+                DetectedCommand::root("dev", "make dev"),
+                DetectedCommand::root("build", "make build"),
             ]
         );
 
@@ -1387,5 +1967,133 @@ mod tests {
         assert_eq!(pkgs[0].relative_path, "apps/web");
         assert_eq!(pkgs[0].manager, "pnpm");
         assert!(pkgs[0].scripts.contains_key("dev"));
+    }
+
+    #[test]
+    fn detects_java_maven_and_gradle_spring_boot_projects() {
+        let maven_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            maven_dir.path().join("pom.xml"),
+            "<project><dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>",
+        )
+        .unwrap();
+        fs::write(maven_dir.path().join("mvnw.cmd"), "@echo off").unwrap();
+        fs::write(maven_dir.path().join("mvnw"), "#!/bin/sh").unwrap();
+
+        let win_info = parse_project_info_with_platform(maven_dir.path(), true).unwrap();
+        assert_eq!(win_info.manager, "maven");
+        assert_eq!(
+            win_info.commands[0],
+            DetectedCommand::root("spring-boot:run", r".\mvnw.cmd spring-boot:run")
+        );
+
+        let unix_info = parse_project_info_with_platform(maven_dir.path(), false).unwrap();
+        assert_eq!(
+            unix_info.commands[0],
+            DetectedCommand::root("spring-boot:run", "./mvnw spring-boot:run")
+        );
+
+        let gradle_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            gradle_dir.path().join("build.gradle.kts"),
+            r#"plugins { id("org.springframework.boot") version "3.3.0" }"#,
+        )
+        .unwrap();
+        fs::write(gradle_dir.path().join("gradlew.bat"), "@echo off").unwrap();
+
+        let gradle_info = parse_project_info_with_platform(gradle_dir.path(), true).unwrap();
+        assert_eq!(gradle_info.manager, "gradle");
+        assert_eq!(
+            gradle_info.commands[0],
+            DetectedCommand::root("bootRun", r".\gradlew.bat bootRun")
+        );
+    }
+
+    #[test]
+    fn detects_python_venv_fastapi_and_go_cmd_entrypoints() {
+        let py_dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(py_dir.path().join(".venv/Scripts")).unwrap();
+        fs::write(py_dir.path().join(".venv/Scripts/python.exe"), "").unwrap();
+        fs::write(
+            py_dir.path().join("requirements.txt"),
+            "fastapi==0.115.0\nuvicorn[standard]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(py_dir.path().join("app")).unwrap();
+        fs::write(
+            py_dir.path().join("app/main.py"),
+            "from fastapi import FastAPI\napp = FastAPI()\n",
+        )
+        .unwrap();
+
+        let py_info = parse_project_info_with_platform(py_dir.path(), true).unwrap();
+        assert_eq!(py_info.manager, "venv");
+        assert_eq!(
+            py_info.commands[0],
+            DetectedCommand::root(
+                "dev",
+                r".venv\Scripts\python.exe -m uvicorn app.main:app --reload",
+            )
+        );
+        assert_eq!(
+            py_info.commands[1],
+            DetectedCommand::root("test", r".venv\Scripts\python.exe -m pytest")
+        );
+
+        let go_dir = tempfile::tempdir().unwrap();
+        fs::write(go_dir.path().join("go.mod"), "module example.com/api\n").unwrap();
+        fs::write(go_dir.path().join(".air.toml"), "").unwrap();
+        fs::create_dir_all(go_dir.path().join("cmd/server")).unwrap();
+        fs::write(go_dir.path().join("cmd/server/main.go"), "package main\n").unwrap();
+
+        let go_info = parse_project_info_with_platform(go_dir.path(), true).unwrap();
+        assert_eq!(go_info.manager, "go");
+        assert_eq!(go_info.commands[0], DetectedCommand::root("dev", "air"));
+        assert_eq!(
+            go_info.commands[1],
+            DetectedCommand::root("run", "go run ./cmd/server")
+        );
+    }
+
+    #[test]
+    fn detects_fullstack_subdirectories_and_mixed_workspace_subprojects() {
+        let fullstack = tempfile::tempdir().unwrap();
+        fs::create_dir_all(fullstack.path().join("frontend")).unwrap();
+        fs::write(fullstack.path().join("frontend/pnpm-lock.yaml"), "").unwrap();
+        fs::write(
+            fullstack.path().join("frontend/package.json"),
+            r#"{"name":"web-ui","scripts":{"dev":"vite","build":"vite build"}}"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(fullstack.path().join("backend")).unwrap();
+        fs::write(
+            fullstack.path().join("backend/pom.xml"),
+            "<project><artifactId>api</artifactId><dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>",
+        )
+        .unwrap();
+
+        let info = parse_project_info_with_platform(fullstack.path(), false).unwrap();
+        assert_eq!(info.manager, "fullstack");
+        assert!(info.commands.contains(&DetectedCommand::with_cwd(
+            "frontend:dev",
+            "pnpm run dev",
+            "frontend",
+        )));
+        assert!(info.commands.contains(&DetectedCommand::with_cwd(
+            "backend:spring-boot:run",
+            "mvn spring-boot:run",
+            "backend",
+        )));
+
+        let subprojects =
+            detect_workspace_packages(fullstack.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(subprojects.len(), 2);
+        assert!(subprojects
+            .iter()
+            .any(|p| p.relative_path == "frontend" && p.manager == "pnpm"));
+        assert!(subprojects
+            .iter()
+            .any(|p| p.relative_path == "backend" && p.manager == "maven"));
     }
 }

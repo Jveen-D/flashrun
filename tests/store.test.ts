@@ -177,4 +177,40 @@ describe('configuration protection', () => {
     expect(useStore.getState().launchGroups).toHaveLength(0);
     await flushPersistence();
   });
+  it('selects backend startup defaults and preserves subdirectory cwd on import and sync', async () => {
+    mocks.invoke.mockResolvedValue(null);
+    const { useStore, flushPersistence } = await import('../src/store');
+    await useStore.getState().hydrate();
+
+    const { projectId: nestId } = useStore.getState().addProject('/workspace/nest-api', 'pnpm', {
+      build: 'nest build',
+      start: 'nest start',
+      'start:dev': 'nest start --watch',
+    });
+    const nestProject = useStore.getState().projects.find((p) => p.id === nestId)!;
+    expect(nestProject.commands.find((c) => c.isDefault)?.label).toBe('start:dev');
+
+    const { projectId: fullstackId } = useStore.getState().addProject('/workspace/fullstack', 'fullstack', {}, [
+      { label: 'frontend:build', cmd: 'pnpm run build', cwd: 'frontend' },
+      { label: 'frontend:dev', cmd: 'pnpm run dev', cwd: 'frontend' },
+      { label: 'backend:spring-boot:run', cmd: 'mvn spring-boot:run', cwd: 'backend' },
+    ]);
+    let fullstackProject = useStore.getState().projects.find((p) => p.id === fullstackId)!;
+    expect(fullstackProject.commands.find((c) => c.isDefault)?.label).toBe('frontend:dev');
+    expect(fullstackProject.commands.find((c) => c.label === 'backend:spring-boot:run')?.cwd).toBe('backend');
+
+    const syncRes = useStore.getState().syncProjectCommands(
+      fullstackId,
+      'fullstack',
+      {},
+      [
+        { label: 'frontend:dev', cmd: 'pnpm run dev', cwd: 'frontend' },
+        { label: 'backend:test', cmd: 'mvn test', cwd: 'backend' },
+      ],
+    );
+    expect(syncRes.added).toBe(1);
+    fullstackProject = useStore.getState().projects.find((p) => p.id === fullstackId)!;
+    expect(fullstackProject.commands.find((c) => c.label === 'backend:test')?.cwd).toBe('backend');
+    await flushPersistence();
+  });
 });

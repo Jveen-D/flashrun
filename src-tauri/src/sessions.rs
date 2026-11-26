@@ -256,12 +256,16 @@ pub enum Output {
     },
 }
 
+const GRACEFUL_STOP_TIMEOUT_MS: u32 = 1500;
+const FORCE_STOP_TIMEOUT_MS: u32 = 2000;
+
 #[cfg(windows)]
 struct Session {
     child: win_conpty::WinChild,
     pty: win_conpty::WinConPty,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     tree: win_conpty::ProcessTree,
+    graceful_stop: bool,
 }
 
 #[cfg(windows)]
@@ -279,8 +283,20 @@ impl Session {
     }
 
     fn stop_and_wait(&self) -> Result<(), String> {
+        if self.graceful_stop && self.child.wait_timeout(0)?.is_none() {
+            if let Ok(mut writer) = self.writer.lock() {
+                let _ = writer.write_all(b"\x03");
+                let _ = writer.flush();
+            }
+            if self.child.wait_timeout(GRACEFUL_STOP_TIMEOUT_MS)?.is_some() {
+                let _ = self.tree.stop();
+                self.pty.close();
+                return Ok(());
+            }
+        }
+
         self.tree.stop()?;
-        if self.child.wait_timeout(2000)?.is_some() {
+        if self.child.wait_timeout(FORCE_STOP_TIMEOUT_MS)?.is_some() {
             self.pty.close();
             return Ok(());
         }
@@ -319,6 +335,7 @@ struct Session {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     tree: ProcessTree,
+    graceful_stop: bool,
 }
 
 #[cfg(unix)]
@@ -344,9 +361,9 @@ impl Session {
         code
     }
 
-    fn stop_and_wait(&self) -> Result<(), String> {
-        self.tree.stop()?;
-        for _ in 0..100 {
+    fn poll_child_exit(&self, timeout_ms: u32) -> Result<bool, String> {
+        let attempts = (timeout_ms / 20).max(1);
+        for _ in 0..attempts {
             if self
                 .child
                 .lock()
@@ -355,9 +372,25 @@ impl Session {
                 .map_err(|e| e.to_string())?
                 .is_some()
             {
-                return Ok(());
+                return Ok(true);
             }
             thread::sleep(Duration::from_millis(20));
+        }
+        Ok(false)
+    }
+
+    fn stop_and_wait(&self) -> Result<(), String> {
+        if self.graceful_stop {
+            let _ = self.tree.interrupt();
+            if self.poll_child_exit(GRACEFUL_STOP_TIMEOUT_MS)? {
+                let _ = self.tree.stop();
+                return Ok(());
+            }
+        }
+
+        self.tree.stop()?;
+        if self.poll_child_exit(FORCE_STOP_TIMEOUT_MS)? {
+            return Ok(());
         }
         Err("停止会话超时；保留会话以便重试。".into())
     }
@@ -523,6 +556,7 @@ fn open_session_with_shell(
     cols: u16,
 ) -> Result<(Session, Box<dyn std::io::Read + Send>), String> {
     validate_dimensions(rows, cols)?;
+    let graceful_stop = command.is_some();
     let command_line = if let Some(cmd) = command {
         format!(
             "\"{}\\System32\\cmd.exe\" /d /q /s /c \"chcp 65001>nul & {}\"",
@@ -571,6 +605,7 @@ fn open_session_with_shell(
             pty: spawned.pty,
             writer,
             tree: spawned.tree,
+            graceful_stop,
         },
         reader,
     ))
@@ -588,6 +623,7 @@ fn open_session_with_shell(
     let pair = native_pty_system()
         .openpty(size(rows, cols)?)
         .map_err(|e| e.to_string())?;
+    let graceful_stop = command.is_some();
     let shell = if command.is_some() {
         "/bin/sh".to_string()
     } else {
@@ -641,6 +677,7 @@ fn open_session_with_shell(
             master: Mutex::new(pair.master),
             writer,
             tree,
+            graceful_stop,
         },
         reader,
     ))
@@ -764,11 +801,15 @@ impl ProcessManager {
             registry.closing = true;
             registry.sessions.keys().copied().collect::<Vec<_>>()
         };
-        for id in ids {
-            if let Err(error) = self.stop(id) {
-                eprintln!("Session {id}: {error}");
+        thread::scope(|scope| {
+            for id in ids {
+                scope.spawn(move || {
+                    if let Err(error) = self.stop(id) {
+                        eprintln!("Session {id}: {error}");
+                    }
+                });
             }
-        }
+        });
     }
 }
 
@@ -838,13 +879,10 @@ impl ProcessTree {
             stopped: Mutex::new(false),
         })
     }
-    fn stop(&self) -> Result<(), String> {
-        let mut stopped = self.stopped.lock().map_err(|e| e.to_string())?;
-        if *stopped {
-            return Ok(());
-        }
+
+    fn signal_groups(&self, signal: libc::c_int) -> Result<(), String> {
         // portable-pty starts a new session. Include interactive shell job groups,
-        // not just direct children, before terminating the session leader.
+        // not just direct children, before signalling the session leader.
         let output = std::process::Command::new("ps")
             .args(["-axo", "pid=,pgid="])
             .output()
@@ -865,7 +903,7 @@ impl ProcessTree {
         }
         for group in groups {
             if group > 1 && group != unsafe { libc::getpgrp() } as u32 {
-                let result = unsafe { libc::kill(-(group as i32), libc::SIGKILL) };
+                let result = unsafe { libc::kill(-(group as i32), signal) };
                 if result != 0
                     && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
                 {
@@ -873,6 +911,19 @@ impl ProcessTree {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn interrupt(&self) -> Result<(), String> {
+        self.signal_groups(libc::SIGINT)
+    }
+
+    fn stop(&self) -> Result<(), String> {
+        let mut stopped = self.stopped.lock().map_err(|e| e.to_string())?;
+        if *stopped {
+            return Ok(());
+        }
+        self.signal_groups(libc::SIGKILL)?;
         *stopped = true;
         Ok(())
     }
@@ -1278,5 +1329,61 @@ mod tests {
         assert!(shells
             .iter()
             .any(|shell| shell.id == "cmd" && shell.available));
+    }
+
+    #[test]
+    fn command_stop_allows_graceful_sigint_cleanup_and_falls_back_when_ignored() {
+        let graceful_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            graceful_dir.path().join("graceful.cjs"),
+            "const fs = require('fs'); process.on('SIGINT', () => { fs.writeFileSync('graceful.done', 'cleaned'); process.exit(0); }); fs.writeFileSync('ready', '1'); setInterval(() => {}, 1000);",
+        )
+        .unwrap();
+        let (session, reader) = open_session(
+            graceful_dir.path().to_string_lossy().into_owned(),
+            Some("node graceful.cjs".into()),
+            24,
+            80,
+        )
+        .unwrap();
+        thread::spawn(move || stream_terminal_output(reader, |_| {}));
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while !graceful_dir.path().join("ready").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "graceful fixture did not start"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        session.stop_and_wait().unwrap();
+        assert!(
+            graceful_dir.path().join("graceful.done").exists(),
+            "service did not run SIGINT shutdown hook before termination"
+        );
+
+        let stubborn_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            stubborn_dir.path().join("stubborn.cjs"),
+            "const fs = require('fs'); process.on('SIGINT', () => {}); fs.writeFileSync('ready', '1'); setInterval(() => {}, 1000);",
+        )
+        .unwrap();
+        let (stubborn_session, stubborn_reader) = open_session(
+            stubborn_dir.path().to_string_lossy().into_owned(),
+            Some("node stubborn.cjs".into()),
+            24,
+            80,
+        )
+        .unwrap();
+        thread::spawn(move || stream_terminal_output(stubborn_reader, |_| {}));
+        let stubborn_deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while !stubborn_dir.path().join("ready").exists() {
+            assert!(
+                std::time::Instant::now() < stubborn_deadline,
+                "stubborn fixture did not start"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        stubborn_session.stop_and_wait().unwrap();
+        assert!(stubborn_session.try_wait_code().unwrap().is_some());
     }
 }

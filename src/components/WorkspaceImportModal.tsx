@@ -10,6 +10,22 @@ export interface WorkspacePackage {
   relativePath: string;
   manager: string;
   scripts: Record<string, string>;
+  commands?: Array<{ label: string; cmd: string }>;
+}
+
+function getPackageCommands(pkg: WorkspacePackage): Array<{ label: string; cmd: string; detail: string }> {
+  if (Array.isArray(pkg.commands) && pkg.commands.length > 0) {
+    return pkg.commands.map((item) => ({
+      label: item.label,
+      cmd: item.cmd,
+      detail: pkg.scripts[item.label] ?? item.cmd,
+    }));
+  }
+  return Object.entries(pkg.scripts).map(([script, body]) => ({
+    label: script,
+    cmd: `${pkg.manager} run ${script}`,
+    detail: body,
+  }));
 }
 
 interface WorkspaceImportModalProps {
@@ -72,11 +88,11 @@ export function WorkspaceImportModal({ open, project, onClose, onImport }: Works
   };
 
   const selectedItems = packages.flatMap((pkg) => (
-    Object.keys(pkg.scripts)
-      .filter((script) => selected[`${pkg.relativePath}::${script}`])
-      .map((script) => ({
-        label: `${pkg.name}:${script}`,
-        cmd: `${pkg.manager} run ${script}`,
+    getPackageCommands(pkg)
+      .filter((entry) => selected[`${pkg.relativePath}::${entry.label}`])
+      .map((entry) => ({
+        label: `${pkg.name}:${entry.label}`,
+        cmd: entry.cmd,
         cwd: pkg.relativePath,
       }))
   ));
@@ -129,21 +145,26 @@ export function WorkspaceImportModal({ open, project, onClose, onImport }: Works
                   className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3.5 dark:border-slate-800 dark:bg-slate-950/50"
                 >
                   <div className="mb-2.5 flex items-center justify-between gap-2">
-                    <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">{pkg.name}</div>
-                    <span className="rounded bg-slate-200/80 px-2 py-0.5 font-mono text-[10px] text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{pkg.name}</div>
+                      <span className="shrink-0 rounded border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+                        {pkg.manager}
+                      </span>
+                    </div>
+                    <span className="shrink-0 rounded bg-slate-200/80 px-2 py-0.5 font-mono text-[10px] text-slate-600 dark:bg-slate-800 dark:text-slate-400">
                       {pkg.relativePath}
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {Object.entries(pkg.scripts).map(([script, body]) => {
-                      const key = `${pkg.relativePath}::${script}`;
+                    {getPackageCommands(pkg).map((entry) => {
+                      const key = `${pkg.relativePath}::${entry.label}`;
                       const checked = Boolean(selected[key]);
                       return (
                         <button
                           key={key}
                           type="button"
                           onClick={() => toggleItem(key)}
-                          title={body}
+                          title={entry.detail}
                           className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 font-mono text-xs transition-colors ${
                             checked
                               ? 'border-blue-500 bg-blue-600 text-white'
@@ -151,7 +172,7 @@ export function WorkspaceImportModal({ open, project, onClose, onImport }: Works
                           }`}
                         >
                           {checked && <Check size={12} />}
-                          <span>{script}</span>
+                          <span>{entry.label}</span>
                         </button>
                       );
                     })}
