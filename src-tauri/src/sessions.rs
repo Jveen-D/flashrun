@@ -1,8 +1,6 @@
 #[cfg(unix)]
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-#[cfg(unix)]
-use std::time::Duration;
 use std::{
     collections::HashMap,
     io::Write,
@@ -12,6 +10,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::{Duration, Instant},
 };
 use tauri::Emitter;
 
@@ -256,7 +255,7 @@ pub enum Output {
     },
 }
 
-const GRACEFUL_STOP_TIMEOUT_MS: u32 = 1500;
+const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_millis(1500);
 const FORCE_STOP_TIMEOUT_MS: u32 = 2000;
 
 #[cfg(windows)]
@@ -266,6 +265,7 @@ struct Session {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     tree: win_conpty::ProcessTree,
     graceful_stop: bool,
+    graceful_deadline: Mutex<Option<Instant>>,
 }
 
 #[cfg(windows)]
@@ -275,8 +275,27 @@ impl Session {
         self.pty.resize(rows, cols)
     }
 
+    fn wait_tree_exit(&self, deadline: Instant) -> Result<bool, String> {
+        loop {
+            let child_done = self.child.wait_timeout(20)?.is_some();
+            if child_done && !self.tree.has_active_processes()? {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            if child_done {
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
     fn wait_exit(&self) -> Option<i32> {
         let code = self.child.wait_blocking().ok();
+        let deadline = self.graceful_deadline.lock().ok().and_then(|d| *d);
+        if let Some(deadline) = deadline {
+            let _ = self.wait_tree_exit(deadline);
+        }
         let _ = self.tree.stop();
         self.pty.close();
         code
@@ -284,11 +303,15 @@ impl Session {
 
     fn stop_and_wait(&self) -> Result<(), String> {
         if self.graceful_stop && self.child.wait_timeout(0)?.is_none() {
+            let deadline = Instant::now() + GRACEFUL_STOP_TIMEOUT;
+            if let Ok(mut guard) = self.graceful_deadline.lock() {
+                *guard = Some(deadline);
+            }
             if let Ok(mut writer) = self.writer.lock() {
                 let _ = writer.write_all(b"\x03");
                 let _ = writer.flush();
             }
-            if self.child.wait_timeout(GRACEFUL_STOP_TIMEOUT_MS)?.is_some() {
+            if self.wait_tree_exit(deadline)? {
                 let _ = self.tree.stop();
                 self.pty.close();
                 return Ok(());
@@ -336,6 +359,7 @@ struct Session {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     tree: ProcessTree,
     graceful_stop: bool,
+    graceful_deadline: Mutex<Option<Instant>>,
 }
 
 #[cfg(unix)]
@@ -348,6 +372,25 @@ impl Session {
             .map_err(|e| e.to_string())
     }
 
+    fn wait_tree_exit(&self, deadline: Instant) -> Result<bool, String> {
+        loop {
+            let child_done = self
+                .child
+                .lock()
+                .map_err(|e| e.to_string())?
+                .try_wait()
+                .map_err(|e| e.to_string())?
+                .is_some();
+            if child_done && !self.tree.has_active_processes()? {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn wait_exit(&self) -> Option<i32> {
         let code = loop {
             let result = self.child.lock().unwrap().try_wait();
@@ -357,39 +400,30 @@ impl Session {
                 Err(_) => break None,
             }
         };
+        let deadline = self.graceful_deadline.lock().ok().and_then(|d| *d);
+        if let Some(deadline) = deadline {
+            let _ = self.wait_tree_exit(deadline);
+        }
         let _ = self.tree.stop();
         code
     }
 
-    fn poll_child_exit(&self, timeout_ms: u32) -> Result<bool, String> {
-        let attempts = (timeout_ms / 20).max(1);
-        for _ in 0..attempts {
-            if self
-                .child
-                .lock()
-                .map_err(|e| e.to_string())?
-                .try_wait()
-                .map_err(|e| e.to_string())?
-                .is_some()
-            {
-                return Ok(true);
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        Ok(false)
-    }
-
     fn stop_and_wait(&self) -> Result<(), String> {
         if self.graceful_stop {
+            let deadline = Instant::now() + GRACEFUL_STOP_TIMEOUT;
+            if let Ok(mut guard) = self.graceful_deadline.lock() {
+                *guard = Some(deadline);
+            }
             let _ = self.tree.interrupt();
-            if self.poll_child_exit(GRACEFUL_STOP_TIMEOUT_MS)? {
+            if self.wait_tree_exit(deadline)? {
                 let _ = self.tree.stop();
                 return Ok(());
             }
         }
 
         self.tree.stop()?;
-        if self.poll_child_exit(FORCE_STOP_TIMEOUT_MS)? {
+        let force_deadline = Instant::now() + Duration::from_millis(FORCE_STOP_TIMEOUT_MS as u64);
+        if self.wait_tree_exit(force_deadline)? {
             return Ok(());
         }
         Err("停止会话超时；保留会话以便重试。".into())
@@ -606,6 +640,7 @@ fn open_session_with_shell(
             writer,
             tree: spawned.tree,
             graceful_stop,
+            graceful_deadline: Mutex::new(None),
         },
         reader,
     ))
@@ -678,6 +713,7 @@ fn open_session_with_shell(
             writer,
             tree,
             graceful_stop,
+            graceful_deadline: Mutex::new(None),
         },
         reader,
     ))
@@ -914,6 +950,27 @@ impl ProcessTree {
         Ok(())
     }
 
+    fn has_active_processes(&self) -> Result<bool, String> {
+        let output = std::process::Command::new("ps")
+            .args(["-axo", "pid=,stat="])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut parts = line.split_whitespace();
+            let Some(pid) = parts.next().and_then(|v| v.parse::<i32>().ok()) else {
+                continue;
+            };
+            let stat = parts.next().unwrap_or("");
+            if !stat.starts_with('Z') && unsafe { libc::getsid(pid) } == self.root as i32 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn interrupt(&self) -> Result<(), String> {
         self.signal_groups(libc::SIGINT)
     }
@@ -933,7 +990,6 @@ impl ProcessTree {
 mod tests {
     use super::*;
     use std::io::Read;
-    use std::time::Duration;
 
     #[test]
     fn startup_query_is_answered_once_across_every_chunk_boundary() {
@@ -1334,11 +1390,26 @@ mod tests {
     #[test]
     fn command_stop_allows_graceful_sigint_cleanup_and_falls_back_when_ignored() {
         let graceful_dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            graceful_dir.path().join("graceful.cjs"),
-            "const fs = require('fs'); process.on('SIGINT', () => { fs.writeFileSync('graceful.done', 'cleaned'); process.exit(0); }); fs.writeFileSync('ready', '1'); setInterval(() => {}, 1000);",
-        )
-        .unwrap();
+        let graceful_script = [
+            "const fs = require('fs');",
+            "const readline = require('readline');",
+            "const rl = readline.createInterface({ input: process.stdin });",
+            "let handled = false;",
+            "function cleanup() {",
+            "  if (handled) return;",
+            "  handled = true;",
+            "  setTimeout(() => {",
+            "    fs.writeFileSync('graceful.done', 'cleaned');",
+            "    process.exit(0);",
+            "  }, 30);",
+            "}",
+            "rl.on('SIGINT', cleanup);",
+            "process.on('SIGINT', cleanup);",
+            "process.stdout.write('GRACEFUL_READY\\n');",
+            "setInterval(() => {}, 1000);",
+        ]
+        .join("\n");
+        std::fs::write(graceful_dir.path().join("graceful.cjs"), graceful_script).unwrap();
         let (session, reader) = open_session(
             graceful_dir.path().to_string_lossy().into_owned(),
             Some("node graceful.cjs".into()),
@@ -1346,14 +1417,22 @@ mod tests {
             80,
         )
         .unwrap();
-        thread::spawn(move || stream_terminal_output(reader, |_| {}));
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        while !graceful_dir.path().join("ready").exists() {
+        let (send, receive) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            stream_terminal_output(reader, |data| {
+                let _ = send.send(data);
+            })
+        });
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut ready_out = String::new();
+        while !ready_out.contains("GRACEFUL_READY") {
+            if let Ok(data) = receive.recv_timeout(Duration::from_millis(100)) {
+                ready_out.push_str(&data);
+            }
             assert!(
-                std::time::Instant::now() < deadline,
-                "graceful fixture did not start"
+                Instant::now() < deadline,
+                "graceful fixture not ready: {ready_out}"
             );
-            thread::sleep(Duration::from_millis(25));
         }
         session.stop_and_wait().unwrap();
         assert!(
@@ -1362,11 +1441,14 @@ mod tests {
         );
 
         let stubborn_dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            stubborn_dir.path().join("stubborn.cjs"),
-            "const fs = require('fs'); process.on('SIGINT', () => {}); fs.writeFileSync('ready', '1'); setInterval(() => {}, 1000);",
-        )
-        .unwrap();
+        let stubborn_script = [
+            "process.stdin.resume();",
+            "process.on('SIGINT', () => {});",
+            "process.stdout.write('STUBBORN_READY\\n');",
+            "setInterval(() => {}, 1000);",
+        ]
+        .join("\n");
+        std::fs::write(stubborn_dir.path().join("stubborn.cjs"), stubborn_script).unwrap();
         let (stubborn_session, stubborn_reader) = open_session(
             stubborn_dir.path().to_string_lossy().into_owned(),
             Some("node stubborn.cjs".into()),
@@ -1374,14 +1456,22 @@ mod tests {
             80,
         )
         .unwrap();
-        thread::spawn(move || stream_terminal_output(stubborn_reader, |_| {}));
-        let stubborn_deadline = std::time::Instant::now() + Duration::from_secs(15);
-        while !stubborn_dir.path().join("ready").exists() {
+        let (stubborn_send, stubborn_recv) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            stream_terminal_output(stubborn_reader, |data| {
+                let _ = stubborn_send.send(data);
+            })
+        });
+        let stubborn_deadline = Instant::now() + Duration::from_secs(15);
+        let mut stubborn_out = String::new();
+        while !stubborn_out.contains("STUBBORN_READY") {
+            if let Ok(data) = stubborn_recv.recv_timeout(Duration::from_millis(100)) {
+                stubborn_out.push_str(&data);
+            }
             assert!(
-                std::time::Instant::now() < stubborn_deadline,
-                "stubborn fixture did not start"
+                Instant::now() < stubborn_deadline,
+                "stubborn fixture not ready: {stubborn_out}"
             );
-            thread::sleep(Duration::from_millis(25));
         }
         stubborn_session.stop_and_wait().unwrap();
         assert!(stubborn_session.try_wait_code().unwrap().is_some());

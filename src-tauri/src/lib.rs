@@ -80,11 +80,7 @@ impl DetectedCommand {
         }
     }
 
-    fn with_cwd(
-        label: impl Into<String>,
-        cmd: impl Into<String>,
-        cwd: impl Into<String>,
-    ) -> Self {
+    fn with_cwd(label: impl Into<String>, cmd: impl Into<String>, cwd: impl Into<String>) -> Self {
         Self {
             label: label.into(),
             cmd: cmd.into(),
@@ -270,15 +266,16 @@ const IGNORED_SCAN_DIRS: &[&str] = &[
 ];
 
 fn has_go_source_files(dir: &Path) -> bool {
-    fs::read_dir(dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|entry| {
-            let path = entry.path();
-            path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("go")
-        })
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("go") {
+            return true;
+        }
+    }
+    false
 }
 
 fn detect_go_cmd_entrypoints(base_path: &Path) -> Vec<String> {
@@ -286,18 +283,16 @@ fn detect_go_cmd_entrypoints(base_path: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(&cmd_root) else {
         return Vec::new();
     };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !path.is_dir() || !has_go_source_files(&path) {
-                return None;
-            }
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .map(ToString::to_string)
-        })
-        .collect();
+    let mut names = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !has_go_source_files(&path) {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            names.push(name.to_string());
+        }
+    }
     names.sort();
     names
 }
@@ -308,10 +303,8 @@ fn detect_go_commands(base_path: &Path) -> Option<(&'static str, Vec<DetectedCom
     }
 
     let mut commands = Vec::new();
-    if [".air.toml", ".air.conf", "air.toml"]
-        .iter()
-        .any(|name| base_path.join(name).is_file())
-    {
+    let air_configs = [".air.toml", ".air.conf", "air.toml"];
+    if air_configs.iter().any(|name| base_path.join(name).is_file()) {
         commands.push(DetectedCommand::root("dev", "air"));
     }
 
@@ -321,20 +314,19 @@ fn detect_go_commands(base_path: &Path) -> Option<(&'static str, Vec<DetectedCom
     if has_root_go {
         commands.push(DetectedCommand::root("run", "go run ."));
         for sub in cmd_entrypoints {
-            commands.push(DetectedCommand::root(
-                format!("run:{sub}"),
-                format!("go run ./cmd/{sub}"),
-            ));
+            let label = format!("run:{sub}");
+            let cmd = format!("go run ./cmd/{sub}");
+            commands.push(DetectedCommand::root(label, cmd));
         }
     } else if cmd_entrypoints.len() == 1 {
         let sub = &cmd_entrypoints[0];
-        commands.push(DetectedCommand::root("run", format!("go run ./cmd/{sub}")));
+        let cmd = format!("go run ./cmd/{sub}");
+        commands.push(DetectedCommand::root("run", cmd));
     } else if cmd_entrypoints.len() > 1 {
         for sub in cmd_entrypoints {
-            commands.push(DetectedCommand::root(
-                format!("run:{sub}"),
-                format!("go run ./cmd/{sub}"),
-            ));
+            let label = format!("run:{sub}");
+            let cmd = format!("go run ./cmd/{sub}");
+            commands.push(DetectedCommand::root(label, cmd));
         }
     } else {
         commands.push(DetectedCommand::root("run", "go run ."));
@@ -363,41 +355,31 @@ fn detect_java_commands(
             "mvn"
         };
 
-        let pom_lower = fs::read_to_string(&pom_path)
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let pom_raw = fs::read_to_string(&pom_path).unwrap_or_default();
+        let pom_lower = pom_raw.to_ascii_lowercase();
         let is_pom_aggregator = pom_lower.contains("<packaging>pom</packaging>");
         let mut commands = Vec::new();
 
         if pom_lower.contains("spring-boot")
             && (!is_pom_aggregator || pom_lower.contains("spring-boot-maven-plugin"))
         {
-            commands.push(DetectedCommand::root(
-                "spring-boot:run",
-                format!("{mvn} spring-boot:run"),
-            ));
+            let run_cmd = format!("{mvn} spring-boot:run");
+            commands.push(DetectedCommand::root("spring-boot:run", run_cmd));
         } else if !is_pom_aggregator
             && (pom_lower.contains("exec-maven-plugin") || pom_lower.contains("<mainclass>"))
         {
-            commands.push(DetectedCommand::root(
-                "run",
-                format!("{mvn} compile exec:java"),
-            ));
+            let run_cmd = format!("{mvn} compile exec:java");
+            commands.push(DetectedCommand::root("run", run_cmd));
         }
 
-        commands.push(DetectedCommand::root(
-            "package",
-            format!("{mvn} package -DskipTests"),
-        ));
+        let pkg_cmd = format!("{mvn} package -DskipTests");
+        commands.push(DetectedCommand::root("package", pkg_cmd));
         commands.push(DetectedCommand::root("test", format!("{mvn} test")));
         return Some(("maven", commands));
     }
 
     let gradle_files = ["build.gradle.kts", "build.gradle"];
-    if gradle_files
-        .iter()
-        .any(|name| base_path.join(name).is_file())
-    {
+    if gradle_files.iter().any(|f| base_path.join(f).is_file()) {
         let gradle = if is_windows {
             if base_path.join("gradlew.bat").is_file() {
                 r".\gradlew.bat"
@@ -410,16 +392,19 @@ fn detect_java_commands(
             "gradle"
         };
 
-        let gradle_lower = gradle_files
-            .iter()
-            .filter_map(|name| fs::read_to_string(base_path.join(name)).ok())
-            .collect::<Vec<_>>()
-            .join("\n")
-            .to_ascii_lowercase();
+        let mut gradle_combined = String::new();
+        for name in gradle_files {
+            if let Ok(text) = fs::read_to_string(base_path.join(name)) {
+                gradle_combined.push_str(&text);
+                gradle_combined.push('\n');
+            }
+        }
+        let gradle_lower = gradle_combined.to_ascii_lowercase();
 
         let mut commands = Vec::new();
         if gradle_lower.contains("org.springframework.boot") || gradle_lower.contains("bootrun") {
-            commands.push(DetectedCommand::root("bootRun", format!("{gradle} bootRun")));
+            let boot_cmd = format!("{gradle} bootRun");
+            commands.push(DetectedCommand::root("bootRun", boot_cmd));
         } else if gradle_lower.contains("id(\"application\")")
             || gradle_lower.contains("id 'application'")
             || gradle_lower.contains("apply plugin: 'application'")
@@ -428,7 +413,8 @@ fn detect_java_commands(
             commands.push(DetectedCommand::root("run", format!("{gradle} run")));
         }
 
-        commands.push(DetectedCommand::root("build", format!("{gradle} build -x test")));
+        let build_cmd = format!("{gradle} build -x test");
+        commands.push(DetectedCommand::root("build", build_cmd));
         commands.push(DetectedCommand::root("test", format!("{gradle} test")));
         return Some(("gradle", commands));
     }
@@ -440,32 +426,28 @@ fn detect_standalone_jar_commands(
     base_path: &Path,
 ) -> Option<(&'static str, Vec<DetectedCommand>)> {
     let entries = fs::read_dir(base_path).ok()?;
-    let mut jars: Vec<String> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !path.is_file() {
-                return None;
-            }
-            let name = path.file_name()?.to_str()?.to_string();
-            let lower = name.to_ascii_lowercase();
-            if lower.ends_with(".jar")
-                && !lower.ends_with("-sources.jar")
-                && !lower.ends_with("-javadoc.jar")
-                && !lower.ends_with("-plain.jar")
-            {
-                Some(name)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let mut jars = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".jar")
+            && !lower.ends_with("-sources.jar")
+            && !lower.ends_with("-javadoc.jar")
+            && !lower.ends_with("-plain.jar")
+        {
+            jars.push(name.to_string());
+        }
+    }
     jars.sort();
     let first = jars.into_iter().next()?;
-    Some((
-        "java",
-        vec![DetectedCommand::root("run", format!("java -jar \"{first}\""))],
-    ))
+    let run_cmd = format!("java -jar \"{first}\"");
+    Some(("java", vec![DetectedCommand::root("run", run_cmd)]))
 }
 
 enum PythonRunner {
@@ -533,13 +515,8 @@ fn parse_conda_env_name(base_path: &Path) -> Option<String> {
         for raw_line in content.lines() {
             let trimmed = raw_line.trim();
             if let Some(rest) = trimmed.strip_prefix("name:") {
-                let env_name = rest
-                    .split('#')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'');
+                let before_comment = rest.split('#').next().unwrap_or("").trim();
+                let env_name = before_comment.trim_matches('"').trim_matches('\'');
                 if !env_name.is_empty() {
                     return Some(env_name.to_string());
                 }
@@ -637,43 +614,37 @@ fn detect_python_commands(
         "environment.yml",
         "environment.yaml",
     ];
-    let has_marker = marker_files
-        .iter()
-        .any(|name| base_path.join(name).is_file())
+    let has_marker = marker_files.iter().any(|f| base_path.join(f).is_file())
         || base_path.join("manage.py").is_file();
     if !has_marker {
         return None;
     }
 
     let runner = resolve_python_runner(base_path, is_windows);
-    let deps_lower = marker_files
-        .iter()
-        .filter_map(|name| fs::read_to_string(base_path.join(name)).ok())
-        .collect::<Vec<_>>()
-        .join("\n")
-        .to_ascii_lowercase();
+    let mut deps_combined = String::new();
+    for name in marker_files {
+        if let Ok(text) = fs::read_to_string(base_path.join(name)) {
+            deps_combined.push_str(&text);
+            deps_combined.push('\n');
+        }
+    }
+    let deps_lower = deps_combined.to_ascii_lowercase();
 
     let mut commands = Vec::new();
     if base_path.join("manage.py").is_file() {
-        commands.push(DetectedCommand::root(
-            "runserver",
-            runner.python_cmd("manage.py runserver"),
-        ));
+        let runserver_cmd = runner.python_cmd("manage.py runserver");
+        commands.push(DetectedCommand::root("runserver", runserver_cmd));
     }
 
     let (asgi_target, file_has_fastapi) = detect_asgi_target(base_path);
     let (flask_target, file_has_flask) = detect_flask_target(base_path);
 
     if deps_lower.contains("fastapi") || deps_lower.contains("uvicorn") || file_has_fastapi {
-        commands.push(DetectedCommand::root(
-            "dev",
-            runner.module_cmd(&format!("uvicorn {asgi_target} --reload")),
-        ));
+        let dev_cmd = runner.module_cmd(&format!("uvicorn {asgi_target} --reload"));
+        commands.push(DetectedCommand::root("dev", dev_cmd));
     } else if deps_lower.contains("flask") || file_has_flask {
-        commands.push(DetectedCommand::root(
-            "dev",
-            runner.module_cmd(&format!("flask --app {flask_target} run --debug")),
-        ));
+        let dev_cmd = runner.module_cmd(&format!("flask --app {flask_target} run --debug"));
+        commands.push(DetectedCommand::root("dev", dev_cmd));
     } else if commands.is_empty() {
         for script in ["main.py", "app.py", "run.py", "server.py"] {
             if base_path.join(script).is_file() {
@@ -798,10 +769,11 @@ fn inspect_subproject_dir(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
-        let commands = scripts
-            .keys()
-            .map(|key| DetectedCommand::root(key.clone(), format!("{manager} run {key}")))
-            .collect();
+        let mut commands = Vec::new();
+        for key in scripts.keys() {
+            let cmd = format!("{manager} run {key}");
+            commands.push(DetectedCommand::root(key.clone(), cmd));
+        }
         return Some(InspectedSubproject {
             manager,
             name,
@@ -841,10 +813,11 @@ fn parse_project_info_with_platform(path: &Path, is_windows: bool) -> Result<Pro
 
         let detected_mgr = detect_node_manager(path, parsed.package_manager.as_deref());
         let scripts = parsed.scripts.unwrap_or_default();
-        let commands = scripts
-            .keys()
-            .map(|key| DetectedCommand::root(key.clone(), format!("{detected_mgr} run {key}")))
-            .collect();
+        let mut commands = Vec::new();
+        for key in scripts.keys() {
+            let cmd = format!("{detected_mgr} run {key}");
+            commands.push(DetectedCommand::root(key.clone(), cmd));
+        }
         (detected_mgr.to_string(), scripts, commands)
     } else {
         let (detected_mgr, commands) =
@@ -870,11 +843,8 @@ fn parse_project_info_with_platform(path: &Path, is_windows: bool) -> Result<Pro
                 manager = sub.manager;
             }
             for cmd in sub.commands {
-                commands.push(DetectedCommand::with_cwd(
-                    format!("{sub_name}:{}", cmd.label),
-                    cmd.cmd,
-                    *sub_name,
-                ));
+                let label = format!("{sub_name}:{}", cmd.label);
+                commands.push(DetectedCommand::with_cwd(label, cmd.cmd, *sub_name));
             }
         }
     }
@@ -1133,40 +1103,43 @@ fn collect_candidate_subproject_dirs(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(root) else {
         return dirs;
     };
-    let mut child_dirs: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect();
+    let mut child_dirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            child_dirs.push(path);
+        }
+    }
     child_dirs.sort();
 
     for dir in child_dirs {
         let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if name.starts_with('.')
-            || IGNORED_SCAN_DIRS
-                .iter()
-                .any(|ignored| ignored.eq_ignore_ascii_case(name))
-        {
+        let is_ignored = IGNORED_SCAN_DIRS
+            .iter()
+            .any(|ignored| ignored.eq_ignore_ascii_case(name));
+        if name.starts_with('.') || is_ignored {
             continue;
         }
-        if SUBPROJECT_GROUP_DIRS
+        let is_group = SUBPROJECT_GROUP_DIRS
             .iter()
-            .any(|group| group.eq_ignore_ascii_case(name))
-        {
+            .any(|group| group.eq_ignore_ascii_case(name));
+        if is_group {
             if let Ok(nested) = fs::read_dir(&dir) {
-                let mut nested_dirs: Vec<PathBuf> = nested
-                    .flatten()
-                    .map(|entry| entry.path())
-                    .filter(|p| {
-                        p.is_dir()
-                            && p.file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|n| !n.starts_with('.'))
-                                .unwrap_or(false)
-                    })
-                    .collect();
+                let mut nested_dirs = Vec::new();
+                for entry in nested.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let Some(sub_name) = path.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    if !sub_name.starts_with('.') {
+                        nested_dirs.push(path);
+                    }
+                }
                 nested_dirs.sort();
                 dirs.extend(nested_dirs);
             }
@@ -1195,11 +1168,14 @@ fn detect_workspace_packages(path: String) -> Result<Vec<WorkspacePackage>, Stri
         patterns.extend(parse_package_json_workspace_patterns(root));
     }
 
-    let has_root_js_manifest = root.join("package.json").is_file()
-        || ["pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"]
-            .iter()
-            .any(|lock| root.join(lock).is_file());
-    let root_manager = has_root_js_manifest.then(|| detect_node_manager(root, None).to_string());
+    let js_locks = ["pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"];
+    let has_root_js_manifest =
+        root.join("package.json").is_file() || js_locks.iter().any(|l| root.join(l).is_file());
+    let root_manager = if has_root_js_manifest {
+        Some(detect_node_manager(root, None).to_string())
+    } else {
+        None
+    };
 
     let mut candidate_dirs = Vec::new();
     for pattern in patterns {
@@ -1225,11 +1201,10 @@ fn detect_workspace_packages(path: String) -> Result<Vec<WorkspacePackage>, Stri
             continue;
         };
 
-        let default_name = pkg_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| relative_path.clone());
+        let default_name = match pkg_dir.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => relative_path.clone(),
+        };
 
         packages.push(WorkspacePackage {
             name: sub.name.unwrap_or(default_name),
@@ -1972,41 +1947,29 @@ mod tests {
     #[test]
     fn detects_java_maven_and_gradle_spring_boot_projects() {
         let maven_dir = tempfile::tempdir().unwrap();
-        fs::write(
-            maven_dir.path().join("pom.xml"),
-            "<project><dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>",
-        )
-        .unwrap();
+        let pom = "<project><dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>";
+        fs::write(maven_dir.path().join("pom.xml"), pom).unwrap();
         fs::write(maven_dir.path().join("mvnw.cmd"), "@echo off").unwrap();
         fs::write(maven_dir.path().join("mvnw"), "#!/bin/sh").unwrap();
 
         let win_info = parse_project_info_with_platform(maven_dir.path(), true).unwrap();
         assert_eq!(win_info.manager, "maven");
-        assert_eq!(
-            win_info.commands[0],
-            DetectedCommand::root("spring-boot:run", r".\mvnw.cmd spring-boot:run")
-        );
+        let expected_win = DetectedCommand::root("spring-boot:run", r".\mvnw.cmd spring-boot:run");
+        assert_eq!(win_info.commands[0], expected_win);
 
         let unix_info = parse_project_info_with_platform(maven_dir.path(), false).unwrap();
-        assert_eq!(
-            unix_info.commands[0],
-            DetectedCommand::root("spring-boot:run", "./mvnw spring-boot:run")
-        );
+        let expected_unix = DetectedCommand::root("spring-boot:run", "./mvnw spring-boot:run");
+        assert_eq!(unix_info.commands[0], expected_unix);
 
         let gradle_dir = tempfile::tempdir().unwrap();
-        fs::write(
-            gradle_dir.path().join("build.gradle.kts"),
-            r#"plugins { id("org.springframework.boot") version "3.3.0" }"#,
-        )
-        .unwrap();
+        let gradle_kts = r#"plugins { id("org.springframework.boot") version "3.3.0" }"#;
+        fs::write(gradle_dir.path().join("build.gradle.kts"), gradle_kts).unwrap();
         fs::write(gradle_dir.path().join("gradlew.bat"), "@echo off").unwrap();
 
         let gradle_info = parse_project_info_with_platform(gradle_dir.path(), true).unwrap();
         assert_eq!(gradle_info.manager, "gradle");
-        assert_eq!(
-            gradle_info.commands[0],
-            DetectedCommand::root("bootRun", r".\gradlew.bat bootRun")
-        );
+        let expected_gradle = DetectedCommand::root("bootRun", r".\gradlew.bat bootRun");
+        assert_eq!(gradle_info.commands[0], expected_gradle);
     }
 
     #[test]
@@ -2014,31 +1977,21 @@ mod tests {
         let py_dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(py_dir.path().join(".venv/Scripts")).unwrap();
         fs::write(py_dir.path().join(".venv/Scripts/python.exe"), "").unwrap();
-        fs::write(
-            py_dir.path().join("requirements.txt"),
-            "fastapi==0.115.0\nuvicorn[standard]\n",
-        )
-        .unwrap();
+        let reqs = "fastapi==0.115.0\nuvicorn[standard]\n";
+        fs::write(py_dir.path().join("requirements.txt"), reqs).unwrap();
         fs::create_dir_all(py_dir.path().join("app")).unwrap();
-        fs::write(
-            py_dir.path().join("app/main.py"),
-            "from fastapi import FastAPI\napp = FastAPI()\n",
-        )
-        .unwrap();
+        let py_main = "from fastapi import FastAPI\napp = FastAPI()\n";
+        fs::write(py_dir.path().join("app/main.py"), py_main).unwrap();
 
         let py_info = parse_project_info_with_platform(py_dir.path(), true).unwrap();
         assert_eq!(py_info.manager, "venv");
+        let expected_dev_cmd = r".venv\Scripts\python.exe -m uvicorn app.main:app --reload";
         assert_eq!(
             py_info.commands[0],
-            DetectedCommand::root(
-                "dev",
-                r".venv\Scripts\python.exe -m uvicorn app.main:app --reload",
-            )
+            DetectedCommand::root("dev", expected_dev_cmd)
         );
-        assert_eq!(
-            py_info.commands[1],
-            DetectedCommand::root("test", r".venv\Scripts\python.exe -m pytest")
-        );
+        let expected_test = DetectedCommand::root("test", r".venv\Scripts\python.exe -m pytest");
+        assert_eq!(py_info.commands[1], expected_test);
 
         let go_dir = tempfile::tempdir().unwrap();
         fs::write(go_dir.path().join("go.mod"), "module example.com/api\n").unwrap();
@@ -2049,10 +2002,8 @@ mod tests {
         let go_info = parse_project_info_with_platform(go_dir.path(), true).unwrap();
         assert_eq!(go_info.manager, "go");
         assert_eq!(go_info.commands[0], DetectedCommand::root("dev", "air"));
-        assert_eq!(
-            go_info.commands[1],
-            DetectedCommand::root("run", "go run ./cmd/server")
-        );
+        let expected_go = DetectedCommand::root("run", "go run ./cmd/server");
+        assert_eq!(go_info.commands[1], expected_go);
     }
 
     #[test]
@@ -2060,34 +2011,23 @@ mod tests {
         let fullstack = tempfile::tempdir().unwrap();
         fs::create_dir_all(fullstack.path().join("frontend")).unwrap();
         fs::write(fullstack.path().join("frontend/pnpm-lock.yaml"), "").unwrap();
-        fs::write(
-            fullstack.path().join("frontend/package.json"),
-            r#"{"name":"web-ui","scripts":{"dev":"vite","build":"vite build"}}"#,
-        )
-        .unwrap();
+        let fe_pkg = r#"{"name":"web-ui","scripts":{"dev":"vite","build":"vite build"}}"#;
+        fs::write(fullstack.path().join("frontend/package.json"), fe_pkg).unwrap();
 
         fs::create_dir_all(fullstack.path().join("backend")).unwrap();
-        fs::write(
-            fullstack.path().join("backend/pom.xml"),
-            "<project><artifactId>api</artifactId><dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>",
-        )
-        .unwrap();
+        let be_pom = "<project><artifactId>api</artifactId><dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>";
+        fs::write(fullstack.path().join("backend/pom.xml"), be_pom).unwrap();
 
         let info = parse_project_info_with_platform(fullstack.path(), false).unwrap();
         assert_eq!(info.manager, "fullstack");
-        assert!(info.commands.contains(&DetectedCommand::with_cwd(
-            "frontend:dev",
-            "pnpm run dev",
-            "frontend",
-        )));
-        assert!(info.commands.contains(&DetectedCommand::with_cwd(
-            "backend:spring-boot:run",
-            "mvn spring-boot:run",
-            "backend",
-        )));
+        let fe_dev = DetectedCommand::with_cwd("frontend:dev", "pnpm run dev", "frontend");
+        assert!(info.commands.contains(&fe_dev));
+        let be_label = "backend:spring-boot:run";
+        let be_run = DetectedCommand::with_cwd(be_label, "mvn spring-boot:run", "backend");
+        assert!(info.commands.contains(&be_run));
 
-        let subprojects =
-            detect_workspace_packages(fullstack.path().to_string_lossy().into_owned()).unwrap();
+        let root_str = fullstack.path().to_string_lossy().into_owned();
+        let subprojects = detect_workspace_packages(root_str).unwrap();
         assert_eq!(subprojects.len(), 2);
         assert!(subprojects
             .iter()

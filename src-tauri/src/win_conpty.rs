@@ -14,9 +14,10 @@ use windows_sys::Win32::{
     System::{
         Console::{ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON},
         JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+            JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+            TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         },
         Pipes::CreatePipe,
         Threading::{
@@ -90,6 +91,23 @@ impl ProcessTree {
                 return Err(std::io::Error::last_os_error().to_string());
             }
             Ok(tree)
+        }
+    }
+
+    pub fn has_active_processes(&self) -> Result<bool, String> {
+        unsafe {
+            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = zeroed();
+            if QueryInformationJobObject(
+                self.0,
+                JobObjectBasicAccountingInformation,
+                &mut info as *mut _ as *mut c_void,
+                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                null_mut(),
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            Ok(info.ActiveProcesses > 0)
         }
     }
 
